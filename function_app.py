@@ -12,6 +12,8 @@ Endpoints:
 - POST /api/send-digest     - Placeholder for SMTP-based email dispatch
 """
 
+# pylint: disable=line-too-long
+
 import datetime
 import json
 import logging
@@ -24,6 +26,15 @@ app = func.FunctionApp()
 @app.function_name(name="scan_mail")
 @app.route(route="scan-mail", methods=["GET"])
 def scan_mail(req: HttpRequest) -> HttpResponse:
+    """
+    Simulates fetching recent iCloud emails.
+
+    Query Parameters:
+        - days (int, optional): Number of past days to fetch emails from.
+
+    Returns:
+        JSON response containing a list of email-like objects.
+    """
     days = req.params.get("days", 1)
     # TODO: Fetch email via IMAP or iCloud API
     sample = [{
@@ -37,6 +48,15 @@ def scan_mail(req: HttpRequest) -> HttpResponse:
 @app.function_name(name="summarize_email")
 @app.route(route="summarize-email", methods=["POST"])
 def summarize_email(req: HttpRequest) -> HttpResponse:
+    """
+    Generates a summary for a given email body.
+
+    Request Body:
+        - body (str): The content of the email to summarize.
+
+    Returns:
+        JSON response containing a summary string.
+    """
     data = req.get_json()
     body = data.get("body")
     # TODO: Send to OpenAI for summary
@@ -45,6 +65,16 @@ def summarize_email(req: HttpRequest) -> HttpResponse:
 @app.function_name(name="build_digest")
 @app.route(route="build-digest", methods=["POST"])
 def build_digest(req: HttpRequest) -> HttpResponse:
+    """
+    Builds a Markdown-formatted digest from email summaries.
+
+    Request Body:
+        - summaries (list): List of email summaries.
+        - audience (str): Identifier for the digest recipient (e.g., 'robert', 'lisa').
+
+    Returns:
+        Markdown response string representing the digest.
+    """
     data = req.get_json()
     summaries = data.get("summaries", [])
     audience = data.get("audience", "robert")
@@ -56,6 +86,17 @@ def build_digest(req: HttpRequest) -> HttpResponse:
 @app.function_name(name="send_digest")
 @app.route(route="send-digest", methods=["POST"])
 def send_digest(req: HttpRequest) -> HttpResponse:
+    """
+    Sends a prepared digest email to a specified recipient.
+
+    Request Body:
+        - to (str): Recipient email address.
+        - subject (str): Email subject line.
+        - content (str): Email body content.
+
+    Returns:
+        JSON response confirming dispatch.
+    """
     data = req.get_json()
     # TODO: Send email via SMTP
     return HttpResponse(json.dumps({"status": "sent"}), mimetype="application/json")
