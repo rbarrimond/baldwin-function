@@ -1,6 +1,4 @@
 
-
-
 # Baldwin Function App
 
 This repository contains the Azure Function App that powers the backend for Baldwin — an AI-driven email assistant that summarizes, categorizes, and routes iCloud email content for Robert and Lisa.
@@ -18,7 +16,7 @@ The following HTTP-triggered Azure Functions are implemented in `function_app.py
 
 ## 🗂️ Project Structure
 
-```
+``` plaintext
 baldwin-function/
 ├── function_app.py         # Core function definitions using @app decorators
 ├── requirements.txt        # Python dependencies
