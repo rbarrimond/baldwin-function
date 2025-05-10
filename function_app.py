@@ -20,6 +20,8 @@ import logging
 
 import azure.functions as func
 from azure.functions import HttpRequest, HttpResponse
+from email_service import EmailService
+from azure.storage.blob import BlobServiceClient
 
 app = func.FunctionApp()
 
@@ -35,15 +37,23 @@ def scan_mail(req: HttpRequest) -> HttpResponse:
     Returns:
         JSON response containing a list of email-like objects.
     """
-    days = req.params.get("days", 1)
-    # TODO: Fetch email via IMAP or iCloud API
-    sample = [{
-        "subject": "Vaccine Appointment",
-        "from": "clinic@example.com",
-        "date": "2025-04-01T09:00:00",
-        "body": "Please confirm your vaccine appointment for April 5."
-    }]
-    return HttpResponse(json.dumps(sample), mimetype="application/json")
+    imap_user = 'your_icloud_email@icloud.com'
+    imap_pass = 'your_app_specific_password'
+    days = int(req.params.get("days", 1))
+
+    email_service = EmailService(imap_user, imap_pass)
+    emails = email_service.fetch_emails(days)
+
+    # Store emails in Azure Storage
+    connection_string = "your_connection_string"
+    blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+    container_client = blob_service_client.get_container_client("emails")
+
+    for email in emails:
+        blob_client = container_client.get_blob_client(email.subject)
+        blob_client.upload_blob(email.json(), overwrite=True)
+
+    return HttpResponse(json.dumps([email.dict() for email in emails]), mimetype="application/json")
 
 @app.function_name(name="summarize_email")
 @app.route(route="summarize-email", methods=["POST"])
