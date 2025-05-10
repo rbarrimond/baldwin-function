@@ -3,6 +3,8 @@
 # Manually managing azure-functions-worker may cause unexpected issues
 
 azure-functions
+azure-storage-blob
 openai
 imapclient
 email-validator
+pydantic  # Ensure Pydantic is explicitly listed
