@@ -9,19 +9,22 @@ It includes:
 import imaplib
 import email
 from email.header import decode_header
-from typing import List, Dict  # Updated to include Dict for headers
+from typing import List, Dict, Optional  # Updated to include Optional for nullable fields
 from pydantic import BaseModel
-import datetime  # Added to support date calculations in fetch_emails
+import datetime
 
 class Email(BaseModel):
     """
-    Represents an email with its subject, sender, date, body, and headers.
+    Represents an email with its subject, sender, recipients, date, body, and headers.
     """
     subject: str
     sender: str
+    to: Optional[List[str]]  # List of primary recipients
+    cc: Optional[List[str]]  # List of CC recipients
+    bcc: Optional[List[str]]  # List of BCC recipients
     date: str
     body: str
-    headers: Dict[str, str]  # Added headers field to store email metadata
+    headers: Dict[str, str]  # Email metadata
 
 class EmailService:
     """
@@ -70,6 +73,9 @@ class EmailService:
                     if isinstance(subject, bytes):
                         subject = subject.decode(encoding if encoding else "utf-8")
                     from_ = msg.get("From")
+                    to_ = msg.get("To")
+                    cc_ = msg.get("Cc")
+                    bcc_ = msg.get("Bcc")
                     date_ = msg.get("Date")
                     body = ""
                     headers = dict(msg.items())  # Extract all headers as a dictionary
@@ -83,7 +89,16 @@ class EmailService:
                     else:
                         body = msg.get_payload(decode=True).decode()
 
-                    emails.append(Email(subject=subject, sender=from_, date=date_, body=body, headers=headers))
+                    emails.append(Email(
+                        subject=subject,
+                        sender=from_,
+                        to=[addr.strip() for addr in to_.split(",")] if to_ else None,
+                        cc=[addr.strip() for addr in cc_.split(",")] if cc_ else None,
+                        bcc=[addr.strip() for addr in bcc_.split(",")] if bcc_ else None,
+                        date=date_,
+                        body=body,
+                        headers=headers
+                    ))
 
         mail.logout()
         return emails

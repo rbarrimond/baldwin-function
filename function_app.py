@@ -37,23 +37,28 @@ def scan_mail(req: HttpRequest) -> HttpResponse:
     Returns:
         JSON response containing a list of email-like objects.
     """
-    imap_user = 'your_icloud_email@icloud.com'
-    imap_pass = 'your_app_specific_password'
-    days = int(req.params.get("days", 1))
+    try:
+        imap_user = 'your_icloud_email@icloud.com'
+        imap_pass = 'your_app_specific_password'
+        days = int(req.params.get("days", 1))
 
-    email_service = EmailService(imap_user, imap_pass)
-    emails = email_service.fetch_emails(days)
+        email_service = EmailService(imap_user, imap_pass)
+        emails = email_service.fetch_emails(days)
 
-    # Store emails in Azure Storage
-    connection_string = "your_connection_string"
-    blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-    container_client = blob_service_client.get_container_client("emails")
+        # Store emails in Azure Storage
+        connection_string = "your_connection_string"
+        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+        container_client = blob_service_client.get_container_client("emails")
 
-    for email in emails:
-        blob_client = container_client.get_blob_client(email.subject)
-        blob_client.upload_blob(email.json(), overwrite=True)
+        for email in emails:
+            blob_name = f"{email.date}_{email.subject.replace(' ', '_')}.json"
+            blob_client = container_client.get_blob_client(blob_name)
+            blob_client.upload_blob(email.json(), overwrite=True)
 
-    return HttpResponse(json.dumps([email.dict() for email in emails]), mimetype="application/json")
+        return HttpResponse(json.dumps([email.dict() for email in emails]), mimetype="application/json")
+    except Exception as e:
+        logging.error(f"Error in scan_mail: {e}")
+        return HttpResponse(json.dumps({"error": str(e)}), status_code=500, mimetype="application/json")
 
 @app.function_name(name="summarize_email")
 @app.route(route="summarize-email", methods=["POST"])
@@ -67,10 +72,16 @@ def summarize_email(req: HttpRequest) -> HttpResponse:
     Returns:
         JSON response containing a summary string.
     """
-    data = req.get_json()
-    body = data.get("body")
-    # TODO: Send to OpenAI for summary
-    return HttpResponse(json.dumps({"summary": f"Summary of: {body[:50]}..."}), mimetype="application/json")
+    try:
+        data = req.get_json()
+        body = data.get("body")
+        if not body:
+            raise ValueError("Email body is required for summarization.")
+        # TODO: Send to OpenAI for summary
+        return HttpResponse(json.dumps({"summary": f"Summary of: {body[:50]}..."}), mimetype="application/json")
+    except Exception as e:
+        logging.error(f"Error in summarize_email: {e}")
+        return HttpResponse(json.dumps({"error": str(e)}), status_code=500, mimetype="application/json")
 
 @app.function_name(name="build_digest")
 @app.route(route="build-digest", methods=["POST"])
@@ -85,13 +96,19 @@ def build_digest(req: HttpRequest) -> HttpResponse:
     Returns:
         Markdown response string representing the digest.
     """
-    data = req.get_json()
-    summaries = data.get("summaries", [])
-    audience = data.get("audience", "robert")
-    digest = f"## Daily Digest for {audience.capitalize()}\n\n"
-    for item in summaries:
-        digest += f"- {item.get('summary')}\n"
-    return HttpResponse(digest, mimetype="text/markdown")
+    try:
+        data = req.get_json()
+        summaries = data.get("summaries", [])
+        audience = data.get("audience", "robert")
+        if not summaries:
+            raise ValueError("Summaries are required to build a digest.")
+        digest = f"## Daily Digest for {audience.capitalize()}\n\n"
+        for item in summaries:
+            digest += f"- {item.get('summary')}\n"
+        return HttpResponse(digest, mimetype="text/markdown")
+    except Exception as e:
+        logging.error(f"Error in build_digest: {e}")
+        return HttpResponse(json.dumps({"error": str(e)}), status_code=500, mimetype="application/json")
 
 @app.function_name(name="send_digest")
 @app.route(route="send-digest", methods=["POST"])
@@ -107,6 +124,15 @@ def send_digest(req: HttpRequest) -> HttpResponse:
     Returns:
         JSON response confirming dispatch.
     """
-    data = req.get_json()
-    # TODO: Send email via SMTP
-    return HttpResponse(json.dumps({"status": "sent"}), mimetype="application/json")
+    try:
+        data = req.get_json()
+        to = data.get("to")
+        subject = data.get("subject")
+        content = data.get("content")
+        if not all([to, subject, content]):
+            raise ValueError("Recipient, subject, and content are required to send a digest.")
+        # TODO: Send email via SMTP
+        return HttpResponse(json.dumps({"status": "sent"}), mimetype="application/json")
+    except Exception as e:
+        logging.error(f"Error in send_digest: {e}")
+        return HttpResponse(json.dumps({"error": str(e)}), status_code=500, mimetype="application/json")
