@@ -17,6 +17,7 @@ __pycache__/
 env/
 venv/
 ENV/
+.envrc
 
 # Distribution / packaging
 build/
@@ -37,16 +38,30 @@ var/
 # PyInstaller
 *.manifest
 *.spec
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
 # ===================================================
 # pyenv
 # ===================================================
 .python-version
 
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.cache/
+
 # ===================================================
 # Function App and Logs
 # ===================================================
 *.log
+local.settings.json
+.azurefunctions/
 
 # ===================================================
 # Azurite Emulator Data & Logs
@@ -58,6 +73,8 @@ azurite_logs/
 # IDE / Editor Files
 # ===================================================
 .idea/
+.vscode/
+*.code-workspace
 .env
 
-.python_packages
+.python_packages/
