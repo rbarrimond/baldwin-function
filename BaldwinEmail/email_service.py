@@ -20,7 +20,7 @@ class Email(BaseModel):
     """
     Represents an email with its subject, sender, recipients, date, body, and headers.
     """
-
+    id: Optional[str] = None
     subject: str
     sender: str
     to: Optional[List[str]] = None
@@ -104,7 +104,7 @@ class EmailService:
     def _parse_message(self, message: Message) -> Email:
         return Email(
             subject=self._decode_header_value(message.get("Subject")),
-            sender=message.get("From", ""),
+            sender=self._decode_header_value(message.get("From", "")),
             to=self._split_recipients(message.get("To")),
             cc=self._split_recipients(message.get("Cc")),
             bcc=self._split_recipients(message.get("Bcc")),
