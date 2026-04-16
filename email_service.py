@@ -24,6 +24,7 @@ class Email(BaseModel):
     to: Optional[List[str]] = None
     cc: Optional[List[str]] = None
     bcc: Optional[List[str]] = None
+    reply_to: Optional[List[str]] = None
     date: str
     body: str
     headers: Dict[str, str]  # Email metadata
