@@ -6,12 +6,14 @@ It includes:
 - A service class `EmailService` to fetch emails from the inbox based on a specified time range.
 """
 
-import imaplib
 import email
-from email.header import decode_header
-from typing import List, Dict, Optional  # Updated to include Optional for nullable fields
-from pydantic import BaseModel
 import datetime
+import imaplib
+from email.header import decode_header
+from email.message import Message
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel
 
 class Email(BaseModel):
     """
@@ -19,9 +21,9 @@ class Email(BaseModel):
     """
     subject: str
     sender: str
-    to: Optional[List[str]]  # List of primary recipients
-    cc: Optional[List[str]]  # List of CC recipients
-    bcc: Optional[List[str]]  # List of BCC recipients
+    to: Optional[List[str]] = None
+    cc: Optional[List[str]] = None
+    bcc: Optional[List[str]] = None
     date: str
     body: str
     headers: Dict[str, str]  # Email metadata
@@ -43,6 +45,86 @@ class EmailService:
         self.imap_user = imap_user
         self.imap_pass = imap_pass
 
+    @staticmethod
+    def _build_since_query(days: int) -> str:
+        return '(SINCE "{}")'.format(
+            (datetime.date.today() - datetime.timedelta(days=days)).strftime("%d-%b-%Y")
+        )
+
+    @staticmethod
+    def _decode_header_value(raw_value: Optional[str]) -> str:
+        if not raw_value:
+            return ""
+
+        decoded_chunks = []
+        for value, encoding in decode_header(raw_value):
+            if isinstance(value, bytes):
+                decoded_chunks.append(value.decode(encoding or "utf-8", errors="replace"))
+            else:
+                decoded_chunks.append(value)
+        return "".join(decoded_chunks)
+
+    @staticmethod
+    def _split_recipients(raw_value: Optional[str]) -> Optional[List[str]]:
+        if not raw_value:
+            return None
+        recipients = [address.strip() for address in raw_value.split(",") if address.strip()]
+        return recipients or None
+
+    @staticmethod
+    def _decode_payload(part: Message) -> str:
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            raw_payload = part.get_payload()
+            return raw_payload if isinstance(raw_payload, str) else ""
+        if isinstance(payload, str):
+            return payload
+        if not isinstance(payload, (bytes, bytearray)):
+            return ""
+
+        charset = part.get_content_charset() or "utf-8"
+        return bytes(payload).decode(charset, errors="replace")
+
+    def _extract_body(self, message: Message) -> str:
+        if message.is_multipart():
+            for part in message.walk():
+                content_type = part.get_content_type()
+                content_disposition = str(part.get("Content-Disposition") or "")
+                if content_type == "text/plain" and "attachment" not in content_disposition.lower():
+                    return self._decode_payload(part)
+            return ""
+
+        return self._decode_payload(message)
+
+    def _parse_message(self, message: Message) -> Email:
+        return Email(
+            subject=self._decode_header_value(message.get("Subject")),
+            sender=message.get("From", ""),
+            to=self._split_recipients(message.get("To")),
+            cc=self._split_recipients(message.get("Cc")),
+            bcc=self._split_recipients(message.get("Bcc")),
+            date=message.get("Date", ""),
+            body=self._extract_body(message),
+            headers=dict(message.items()),
+        )
+
+    def _fetch_email_batch(self, mail: imaplib.IMAP4_SSL, email_id: bytes) -> List[Email]:
+        _, message_data = mail.fetch(email_id.decode("ascii"), "(RFC822)")
+        parsed_messages: List[Email] = []
+
+        for response_part in message_data:
+            if not isinstance(response_part, tuple) or len(response_part) < 2:
+                continue
+
+            raw_message = response_part[1]
+            if not isinstance(raw_message, (bytes, bytearray)):
+                continue
+
+            message = email.message_from_bytes(bytes(raw_message))
+            parsed_messages.append(self._parse_message(message))
+
+        return parsed_messages
+
     def fetch_emails(self, days: int) -> List[Email]:
         """
         Fetches emails from the inbox received within the last specified number of days.
@@ -53,52 +135,23 @@ class EmailService:
         Returns:
             List[Email]: A list of Email objects containing the fetched emails.
         """
+        if days < 1:
+            raise ValueError("days must be greater than 0")
+
         mail = imaplib.IMAP4_SSL(self.imap_host)
-        mail.login(self.imap_user, self.imap_pass)
-        mail.select("inbox")
+        try:
+            mail.login(self.imap_user, self.imap_pass)
+            status, _ = mail.select("inbox")
+            if status != "OK":
+                raise RuntimeError("Unable to select inbox.")
 
-        result, data = mail.search(None, '(SINCE "{}")'.format(
-            (datetime.date.today() - datetime.timedelta(days=days)).strftime("%d-%b-%Y")
-        ))
+            _, data = mail.search(None, self._build_since_query(days))
+            email_ids = data[0].split() if data and data[0] else []
 
-        email_ids = data[0].split()
-        emails = []
+            emails: List[Email] = []
+            for email_id in email_ids:
+                emails.extend(self._fetch_email_batch(mail, email_id))
 
-        for email_id in email_ids:
-            result, msg_data = mail.fetch(email_id, "(RFC822)")
-            for response_part in msg_data:
-                if isinstance(response_part, tuple):
-                    msg = email.message_from_bytes(response_part[1])
-                    subject, encoding = decode_header(msg["Subject"])[0]
-                    if isinstance(subject, bytes):
-                        subject = subject.decode(encoding if encoding else "utf-8")
-                    from_ = msg.get("From")
-                    to_ = msg.get("To")
-                    cc_ = msg.get("Cc")
-                    bcc_ = msg.get("Bcc")
-                    date_ = msg.get("Date")
-                    body = ""
-                    headers = dict(msg.items())  # Extract all headers as a dictionary
-                    if msg.is_multipart():
-                        for part in msg.walk():
-                            content_type = part.get_content_type()
-                            content_disposition = str(part.get("Content-Disposition"))
-                            if content_type == "text/plain" and "attachment" not in content_disposition:
-                                body = part.get_payload(decode=True).decode()
-                                break
-                    else:
-                        body = msg.get_payload(decode=True).decode()
-
-                    emails.append(Email(
-                        subject=subject,
-                        sender=from_,
-                        to=[addr.strip() for addr in to_.split(",")] if to_ else None,
-                        cc=[addr.strip() for addr in cc_.split(",")] if cc_ else None,
-                        bcc=[addr.strip() for addr in bcc_.split(",")] if bcc_ else None,
-                        date=date_,
-                        body=body,
-                        headers=headers
-                    ))
-
-        mail.logout()
-        return emails
+            return emails
+        finally:
+            mail.logout()

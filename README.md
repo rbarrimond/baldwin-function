@@ -1,40 +1,34 @@
 
 # Baldwin Function App
 
-This repository contains the Azure Function App that powers the backend for Baldwin — an AI-driven email assistant that summarizes, categorizes, and routes iCloud email content for Robert and Lisa.
+This repository contains the Azure Function App that powers the backend for Baldwin, an email assistant that reads IMAP mailboxes, creates digest content, and sends completed digests over SMTP.
 
 ## 🧠 Functionality
 
 The following HTTP-triggered Azure Functions are implemented in `function_app.py` using the Python V2 decorator model:
 
-| Endpoint          | Method | Description |
-|-------------------|--------|-------------|
-| `/api/scan-mail`       | GET    | Fetch recent iCloud emails (mock or IMAP) |
-| `/api/summarize-email`| POST   | Summarize the body of an email |
-| `/api/build-digest`   | POST   | Combine multiple summaries into a digest |
-| `/api/send-digest`    | POST   | Send a digest email to Robert or Lisa |
+- `GET /api/scan-mail`: Fetch recent IMAP emails and optionally persist them to Blob Storage.
+- `POST /api/summarize-email`: Create a concise local summary from an email body.
+- `POST /api/build-digest`: Combine multiple summaries into a Markdown digest.
+- `POST /api/send-digest`: Send a digest email over SMTP.
 
 ## 🗂️ Project Structure
 
 ``` plaintext
 baldwin-function/
 ├── function_app.py         # Core function definitions using @app decorators
+├── email_service.py        # IMAP parsing and mailbox access helpers
 ├── requirements.txt        # Python dependencies
 ├── host.json               # Azure Functions host config
 ├── local.settings.json     # Local dev settings (excluded from deployment)
-└── build.sh                # Optional script to zip for deployment
+└── README.md               # Local setup and endpoint reference
 ```
 
 ## 🚀 Deployment
 
-This function app is designed to be deployed via Terraform using `zip_deploy_file`. Run `build.sh` to generate a zip package:
+This function app is designed to be deployed via Terraform using `zip_deploy_file` or an equivalent CI packaging step. A deployment package is expected to include the function source files and `requirements.txt`.
 
-```bash
-chmod +x build.sh
-./build.sh
-```
-
-The resulting `build.zip` can be deployed using:
+Example Terraform usage:
 
 ```hcl
 zip_deploy_file = "${path.module}/../baldwin-function/build.zip"
@@ -42,13 +36,17 @@ zip_deploy_file = "${path.module}/../baldwin-function/build.zip"
 
 ## 🔐 Environment Variables
 
-These must be set via `app_settings` in Terraform or `local.settings.json` for local development:
+These should be set via `app_settings` in Terraform or `local.settings.json` for local development:
 
-- `OPENAI_API_KEY`
+- `IMAP_USER`
+- `IMAP_PASSWORD`
 - `SMTP_SERVER`
 - `SMTP_PORT`
 - `SMTP_USERNAME`
 - `SMTP_PASSWORD`
+- `SMTP_FROM` (optional, defaults to `SMTP_USERNAME`)
+- `EMAILS_CONTAINER` (optional, defaults to `emails`)
+- `AzureWebJobsStorage` (optional for local-only scanning, required for blob persistence)
 
 ## 🧪 Testing Locally
 
@@ -58,13 +56,18 @@ Use [Azure Functions Core Tools](https://learn.microsoft.com/en-us/azure/azure-f
 func start
 ```
 
+Example requests:
+
+```bash
+curl "http://localhost:7071/api/scan-mail?days=1"
+
+curl -X POST "http://localhost:7071/api/summarize-email" \
+  -H "Content-Type: application/json" \
+  -d '{"body":"Agenda for tomorrow: review the pricing update and send the revised contract."}'
+```
+
 ## 📬 Future Features
 
-- IMAP integration to pull real iCloud emails
 - Tagging logic (`/tag-email`)
 - Event extraction (`/extract-events`)
 - Smart digest scheduling
-
----
-
-© 2025 Robert Barrimond — All rights reserved.

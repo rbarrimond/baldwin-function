@@ -2,9 +2,6 @@
 # The Python Worker is managed by the Azure Functions platform
 # Manually managing azure-functions-worker may cause unexpected issues
 
-azure-functions
-azure-storage-blob
-openai
-imapclient
-email-validator
-pydantic  # Ensure Pydantic is explicitly listed
+azure-functions>=1.23.0
+azure-storage-blob>=12.25.1
+pydantic>=2.11.3,<3.0.0
