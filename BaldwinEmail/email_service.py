@@ -6,8 +6,8 @@ It includes:
 - A service class `EmailService` to fetch emails from the inbox based on a specified time range.
 """
 
-import email
 import datetime
+import email
 import imaplib
 from email.header import decode_header
 from email.message import Message
@@ -15,10 +15,12 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 
+
 class Email(BaseModel):
     """
     Represents an email with its subject, sender, recipients, date, body, and headers.
     """
+
     subject: str
     sender: str
     to: Optional[List[str]] = None
@@ -27,7 +29,8 @@ class Email(BaseModel):
     reply_to: Optional[List[str]] = None
     date: str
     body: str
-    headers: Dict[str, str]  # Email metadata
+    headers: Dict[str, str]
+
 
 class EmailService:
     """
@@ -42,7 +45,8 @@ class EmailService:
             imap_user (str): The IMAP username.
             imap_pass (str): The IMAP password.
         """
-        self.imap_host = 'imap.mail.me.com'
+
+        self.imap_host = "imap.mail.me.com"
         self.imap_user = imap_user
         self.imap_pass = imap_pass
 
@@ -136,6 +140,7 @@ class EmailService:
         Returns:
             List[Email]: A list of Email objects containing the fetched emails.
         """
+
         if days < 1:
             raise ValueError("days must be greater than 0")
 
