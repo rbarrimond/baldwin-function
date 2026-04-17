@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "baldwin-function"
+version = "0.1.0"
+description = "Azure Functions backend for Baldwin inbox workflows."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "azure-functions>=1.23.0",
+    "azure-storage-blob>=12.25.1",
+    "pydantic>=2.11.3,<3.0.0",
+    "psycopg[binary]>=3.2.6,<4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.5,<9.0.0",
+]
+
+[project.scripts]
+vectorize-inbox = "scripts.vectorize_inbox:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["BaldwinEmail*", "scripts*"]
