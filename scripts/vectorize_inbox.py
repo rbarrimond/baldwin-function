@@ -18,9 +18,23 @@ from baldwin.email import (EmailNormalizer, EmailService, HashingVectorizer,
                            PostgresEmailVectorStore)
 
 
+def _status(message: str) -> None:
+    print(f"[vectorize-inbox] {message}", file=sys.stderr)
+
+
+def _display_label(value: str, fallback: str = "(no subject)") -> str:
+    normalized = " ".join(value.split()).strip()
+    if not normalized:
+        return fallback
+    if len(normalized) <= 80:
+        return normalized
+    return normalized[:77] + "..."
+
+
 def _load_local_settings() -> None:
     settings_path = Path(__file__).resolve().parents[1] / "local.settings.json"
     if not settings_path.exists():
+        _status("No local.settings.json found; using process environment only.")
         return
 
     with settings_path.open("r", encoding="utf-8") as settings_file:
@@ -28,11 +42,21 @@ def _load_local_settings() -> None:
 
     values = settings_data.get("Values")
     if not isinstance(values, dict):
+        _status("local.settings.json does not contain a Values object; skipping load.")
         return
 
+    loaded_names: list[str] = []
     for name, value in values.items():
         if isinstance(value, str) and name not in os.environ:
             os.environ[name] = value
+            loaded_names.append(name)
+
+    _status(
+        "Loaded local settings for "
+        + ", ".join(sorted(loaded_names))
+        if loaded_names
+        else "local.settings.json found; existing environment variables took precedence."
+    )
 
 
 def _get_setting(*names: str, default: str | None = None) -> str | None:
@@ -99,12 +123,18 @@ def _load_settings(args: argparse.Namespace) -> ScriptSettings:
 
 def main() -> int:
     """Run the inbox fetch, vectorization, and persistence workflow."""
+    _status("Starting inbox vectorization run.")
     _load_local_settings()
     args = _parse_args()
     if args.days < 1 or args.days > 365:
         raise ValueError("--days must be between 1 and 365.")
 
     settings = _load_settings(args)
+    _status(
+        "Configuration resolved: "
+        f"days={args.days} dry_run={args.dry_run} model={settings.model_name} "
+        f"dimensions={settings.dimensions} imap_host={settings.imap_host}:{settings.imap_port}"
+    )
     email_service = EmailService(
         settings.imap_user,
         settings.imap_password,
@@ -119,21 +149,30 @@ def main() -> int:
         model_name=settings.model_name,
     )
 
+    _status("Fetching emails from IMAP inbox.")
     emails = email_service.fetch_emails(args.days)
+    _status(f"Fetched {len(emails)} email(s) from the inbox.")
     if not args.dry_run:
+        _status("Bootstrapping PostgreSQL vector schema.")
         store.bootstrap()
+        _status("PostgreSQL vector schema is ready.")
+    else:
+        _status("Dry-run mode enabled; PostgreSQL writes will be skipped.")
 
     fetched_count = len(emails)
     inserted_count = 0
     updated_count = 0
     skipped_count = 0
 
-    for email_message in emails:
+    for index, email_message in enumerate(emails, start=1):
+        subject_label = _display_label(email_message.subject)
+        _status(f"Processing email {index}/{fetched_count}: {subject_label}")
         try:
             normalized_email = normalizer.normalize(email_message)
             vector = vectorizer.vectorize(normalized_email.searchable_text)
             if args.dry_run:
                 skipped_count += 1
+                _status(f"Dry-run: generated vector for email {index}/{fetched_count}.")
                 continue
 
             result = store.upsert_email(normalized_email, vector)
@@ -141,6 +180,10 @@ def main() -> int:
                 inserted_count += 1
             if result.embedding_updated:
                 updated_count += 1
+            _status(
+                f"Stored email {index}/{fetched_count}: inserted={result.inserted} "
+                f"embedding_updated={result.embedding_updated}"
+            )
         except ValueError as exc:
             skipped_count += 1
             print(f"Skipping email: {exc}", file=sys.stderr)
