@@ -2,7 +2,7 @@
 
 import unittest
 
-from baldwin.email import Email, EmailNormalizer, HashingVectorizer
+from baldwin.email import Email, EmailNormalizer, HashingVectorizer, PostgresEmailVectorStore
 
 
 class EmailNormalizerTests(unittest.TestCase):
@@ -66,6 +66,43 @@ class HashingVectorizerTests(unittest.TestCase):
         self.assertEqual(len(first), 32)
         self.assertEqual(first, second)
         self.assertAlmostEqual(sum(value * value for value in first), 1.0, places=6)
+
+
+class PostgresEmailVectorStoreTests(unittest.TestCase):
+    """Behavioral tests for adapting normalized emails into generic vector documents."""
+
+    def test_to_document_maps_email_fields_into_generic_payload(self) -> None:
+        """The email store should translate a normalized email into a vector document."""
+        normalized_email = EmailNormalizer().normalize(
+            Email(
+                id="<message-123@example.com>",
+                subject="Subject",
+                sender="sender@example.com",
+                to=["recipient@example.com"],
+                cc=["cc@example.com"],
+                bcc=None,
+                reply_to=["reply@example.com"],
+                date="Fri, 11 Apr 2026 09:15:00 +0000",
+                body="First line\n\nSecond line",
+                headers={"Message-ID": "<message-123@example.com>", "X-Test": "1"},
+            )
+        )
+
+        document = PostgresEmailVectorStore.to_document(normalized_email)
+
+        self.assertEqual(document.document_key, normalized_email.fingerprint)
+        self.assertEqual(document.source_type, "email")
+        self.assertEqual(document.source_id, "<message-123@example.com>")
+        self.assertEqual(document.title, "Subject")
+        self.assertEqual(document.body, "First line Second line")
+        self.assertEqual(document.searchable_text, normalized_email.searchable_text)
+        self.assertEqual(document.content_checksum, normalized_email.content_checksum)
+        self.assertEqual(document.metadata["sender"], "sender@example.com")
+        self.assertEqual(
+            document.metadata["recipients"],
+            ["recipient@example.com", "cc@example.com", "reply@example.com"],
+        )
+        self.assertEqual(document.metadata["headers"]["X-Test"], "1")
 
 
 if __name__ == "__main__":

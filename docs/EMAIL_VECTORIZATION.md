@@ -2,6 +2,8 @@
 
 This repository can fetch inbox messages from IMAP, normalize them into a stable persistence shape, generate deterministic local vectors, and store both metadata and vectors in PostgreSQL.
 
+The persistence layer now uses a generic vector-document store with an email-specific adapter layered on top. The email adapter maps normalized emails into generic vector documents before delegating to PostgreSQL storage.
+
 ## Scope
 
 - The first implementation is a manual script.
@@ -21,26 +23,23 @@ The script accepts the following settings:
 
 ## Schema
 
-### `emails`
+### `vector_documents`
 
 - `id BIGSERIAL PRIMARY KEY`
-- `fingerprint TEXT UNIQUE NOT NULL`: deterministic idempotency key.
-- `source_message_id TEXT`: upstream message-id header when available.
-- `subject TEXT NOT NULL`
-- `sender TEXT NOT NULL`
-- `recipients JSONB NOT NULL`
-- `raw_date TEXT NOT NULL`
-- `sent_at TIMESTAMPTZ NULL`: parsed RFC2822 timestamp when parsing succeeds.
+- `document_key TEXT UNIQUE NOT NULL`: deterministic idempotency key.
+- `source_type TEXT NOT NULL`: source classifier such as `email`.
+- `source_id TEXT NULL`: upstream source identifier, such as `Message-ID`.
+- `title TEXT NOT NULL`
 - `body TEXT NOT NULL`
-- `searchable_text TEXT NOT NULL`: normalized subject plus normalized body.
-- `headers JSONB NOT NULL`
+- `searchable_text TEXT NOT NULL`: normalized text used for vector generation.
+- `metadata JSONB NOT NULL`: email-specific fields such as sender, recipients, raw date, parsed sent timestamp, and headers.
 - `content_checksum TEXT NOT NULL`: checksum used to detect embedding refreshes.
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 - `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 
-### `email_embeddings`
+### `vector_embeddings`
 
-- `email_id BIGINT PRIMARY KEY REFERENCES emails(id) ON DELETE CASCADE`
+- `document_id BIGINT PRIMARY KEY REFERENCES vector_documents(id) ON DELETE CASCADE`
 - `model_name TEXT NOT NULL`
 - `dimensions INTEGER NOT NULL`
 - `embedding VECTOR NOT NULL`
@@ -50,7 +49,7 @@ The script accepts the following settings:
 
 ## Deduplication
 
-The script prefers `Message-ID` when it is present. If the upstream message does not provide one, the fallback fingerprint is computed from sender, date, subject, and normalized text content. Re-running the script against the same mailbox window is expected to be idempotent.
+The email adapter prefers `Message-ID` when it is present. If the upstream message does not provide one, the fallback fingerprint is computed from sender, date, subject, and normalized text content. Re-running the script against the same mailbox window is expected to be idempotent.
 
 ## Local Run
 
