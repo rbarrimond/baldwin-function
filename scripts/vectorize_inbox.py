@@ -31,6 +31,19 @@ def _display_label(value: str, fallback: str = "(no subject)") -> str:
     return normalized[:77] + "..."
 
 
+def _format_chunking_status(metadata: dict[str, object]) -> str | None:
+    chunk_count = metadata.get("chunk_count")
+    if not isinstance(chunk_count, int) or chunk_count <= 1:
+        return None
+
+    chunk_lengths = metadata.get("chunk_lengths")
+    if isinstance(chunk_lengths, list) and all(isinstance(length, int) for length in chunk_lengths):
+        max_chunk_length = max(chunk_lengths) if chunk_lengths else 0
+        return f"chunked={chunk_count} max_chunk_length={max_chunk_length}"
+
+    return f"chunked={chunk_count}"
+
+
 def _render_progress(
     current: int,
     total: int,
@@ -120,6 +133,15 @@ class ScriptSettings:
     enable_fallback: bool
 
 
+@dataclass(frozen=True)
+class ProcessingCounters:
+    """Running totals for the vectorization progress bar."""
+
+    inserted: int
+    updated: int
+    skipped: int
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=1, help="Inbox lookback window in days.")
@@ -184,6 +206,35 @@ def _load_settings(args: argparse.Namespace) -> ScriptSettings:
     )
 
 
+def _process_email(
+    *,
+    email_message,
+    args: argparse.Namespace,
+    normalizer: EmailNormalizer,
+    embedding_service,
+    store: PostgresEmailVectorStore,
+) -> tuple[bool, bool, bool]:
+    normalized_email = normalizer.normalize(email_message)
+    embedding_result = embedding_service.embed_text(normalized_email.searchable_text)
+    chunking_status = _format_chunking_status(embedding_result.embedding.metadata)
+    if embedding_result.used_fallback:
+        _status(
+            "Primary embedding provider failed; using fallback provider "
+            f"{embedding_result.embedding.provider}. reason={embedding_result.fallback_reason}"
+        )
+    elif chunking_status:
+        _status(
+            "Primary embedding provider chunked long input. "
+            f"provider={embedding_result.embedding.provider} {chunking_status}"
+        )
+
+    if args.dry_run:
+        return False, False, True
+
+    result = store.upsert_email(normalized_email, embedding_result.embedding)
+    return result.inserted, result.embedding_updated, False
+
+
 def main() -> int:
     """Run the inbox fetch, vectorization, and persistence workflow."""
     _status("Starting inbox vectorization run.")
@@ -241,30 +292,19 @@ def main() -> int:
     for index, email_message in enumerate(emails, start=1):
         subject_label = _display_label(email_message.subject)
         try:
-            normalized_email = normalizer.normalize(email_message)
-            embedding_result = embedding_service.embed_text(normalized_email.searchable_text)
-            if embedding_result.used_fallback:
-                _status(
-                    "Primary embedding provider failed; using fallback provider "
-                    f"{embedding_result.embedding.provider}. reason={embedding_result.fallback_reason}"
-                )
-            if args.dry_run:
-                skipped_count += 1
-                _render_progress(
-                    index,
-                    fetched_count,
-                    subject_label,
-                    inserted=inserted_count,
-                    updated=updated_count,
-                    skipped=skipped_count,
-                )
-                continue
-
-            result = store.upsert_email(normalized_email, embedding_result.embedding)
-            if result.inserted:
+            inserted, updated, skipped = _process_email(
+                email_message=email_message,
+                args=args,
+                normalizer=normalizer,
+                embedding_service=embedding_service,
+                store=store,
+            )
+            if inserted:
                 inserted_count += 1
-            if result.embedding_updated:
+            if updated:
                 updated_count += 1
+            if skipped:
+                skipped_count += 1
             _render_progress(
                 index,
                 fetched_count,
