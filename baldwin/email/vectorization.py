@@ -1,13 +1,13 @@
-"""Utilities for normalizing emails and generating local vectors."""
+"""Utilities for normalizing emails into a persistence-ready shape."""
 
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
-from typing import Iterable
+
+from baldwin.embedding import HashingEmbeddingProvider
 
 from .email_service import Email
 
@@ -29,10 +29,6 @@ def _parse_date(raw_date: str) -> str | None:
         return parsed.isoformat() + "Z"
 
     return parsed.isoformat()
-
-
-def _tokenize(value: str) -> Iterable[str]:
-    return re.findall(r"[A-Za-z0-9']+", value.lower())
 
 
 @dataclass(frozen=True)
@@ -118,31 +114,13 @@ class EmailNormalizer:
 
 
 class HashingVectorizer:
-    """A deterministic local vectorizer that produces dense vectors for pgvector storage."""
+    """Compatibility wrapper over the shared hashing embedding provider."""
 
     def __init__(self, dimensions: int = 256, model_name: str = "hashing-v1"):
-        if dimensions < 8:
-            raise ValueError("dimensions must be at least 8")
-
-        self.dimensions = dimensions
-        self.model_name = model_name
+        self.provider = HashingEmbeddingProvider(dimensions=dimensions, model_name=model_name)
+        self.dimensions = self.provider.dimensions
+        self.model_name = self.provider.model_name
 
     def vectorize(self, text: str) -> list[float]:
         """Convert input text into a deterministic dense vector."""
-        normalized_text = _normalize_whitespace(text)
-        if not normalized_text:
-            raise ValueError("Text is required for vectorization.")
-
-        vector = [0.0] * self.dimensions
-        for token in _tokenize(normalized_text):
-            digest = hashlib.sha256(token.encode("utf-8")).digest()
-            bucket = int.from_bytes(digest[:4], "big") % self.dimensions
-            sign = 1.0 if digest[4] % 2 == 0 else -1.0
-            vector[bucket] += sign
-
-        magnitude = math.sqrt(sum(value * value for value in vector))
-        if magnitude == 0:
-            return vector
-
-        return [value / magnitude for value in vector]
-    
+        return self.provider.embed_texts([text])[0].vector

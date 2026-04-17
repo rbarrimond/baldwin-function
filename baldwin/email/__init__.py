@@ -5,11 +5,11 @@ from .postgres_store import PostgresEmailVectorStore, StoreResult
 from .vectorization import EmailNormalizer, HashingVectorizer, NormalizedEmail
 
 __all__ = [
-	"Email",
-	"EmailNormalizer",
-	"EmailService",
-	"HashingVectorizer",
-	"NormalizedEmail",
-	"PostgresEmailVectorStore",
-	"StoreResult",
+    "Email",
+    "EmailNormalizer",
+    "EmailService",
+    "HashingVectorizer",
+    "NormalizedEmail",
+    "PostgresEmailVectorStore",
+    "StoreResult",
 ]

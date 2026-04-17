@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from baldwin.embedding import EmbeddingResult
 import psycopg
 from psycopg import sql
 
@@ -42,25 +43,17 @@ class PostgresVectorStore:
     def __init__(
         self,
         database_url: str,
-        dimensions: int,
-        model_name: str,
         document_table: str = "vector_documents",
         embedding_table: str = "vector_embeddings",
     ):
         if not database_url:
             raise ValueError("database_url is required")
-        if dimensions < 8:
-            raise ValueError("dimensions must be at least 8")
-        if not model_name:
-            raise ValueError("model_name is required")
         if not document_table:
             raise ValueError("document_table is required")
         if not embedding_table:
             raise ValueError("embedding_table is required")
 
         self.database_url = database_url
-        self.dimensions = dimensions
-        self.model_name = model_name
         self.document_table = document_table
         self.embedding_table = embedding_table
 
@@ -95,7 +88,8 @@ class PostgresVectorStore:
                     sql.SQL(
                         """
                         CREATE TABLE IF NOT EXISTS {embedding_table} (
-                            document_id BIGINT PRIMARY KEY REFERENCES {document_table}(id) ON DELETE CASCADE,
+                            document_id BIGINT NOT NULL REFERENCES {document_table}(id) ON DELETE CASCADE,
+                            provider TEXT NOT NULL DEFAULT 'legacy',
                             model_name TEXT NOT NULL,
                             dimensions INTEGER NOT NULL,
                             embedding VECTOR NOT NULL,
@@ -111,9 +105,31 @@ class PostgresVectorStore:
                 )
                 cursor.execute(
                     sql.SQL(
-                        "CREATE INDEX IF NOT EXISTS {index_name} ON {embedding_table}(model_name)"
+                        "ALTER TABLE {embedding_table} ADD COLUMN IF NOT EXISTS provider TEXT NOT NULL DEFAULT 'legacy'"
                     ).format(
-                        index_name=sql.Identifier(f"idx_{self.embedding_table}_model_name"),
+                        embedding_table=embedding_table,
+                    )
+                )
+                cursor.execute(
+                    sql.SQL("ALTER TABLE {embedding_table} DROP CONSTRAINT IF EXISTS {constraint_name}").format(
+                        embedding_table=embedding_table,
+                        constraint_name=sql.Identifier(f"{self.embedding_table}_pkey"),
+                    )
+                )
+                cursor.execute(
+                    sql.SQL(
+                        "ALTER TABLE {embedding_table} ADD CONSTRAINT {constraint_name} "
+                        "PRIMARY KEY (document_id, provider, model_name)"
+                    ).format(
+                        embedding_table=embedding_table,
+                        constraint_name=sql.Identifier(f"{self.embedding_table}_pkey"),
+                    )
+                )
+                cursor.execute(
+                    sql.SQL(
+                        "CREATE INDEX IF NOT EXISTS {index_name} ON {embedding_table}(provider, model_name)"
+                    ).format(
+                        index_name=sql.Identifier(f"idx_{self.embedding_table}_provider_model_name"),
                         embedding_table=embedding_table,
                     )
                 )
@@ -121,12 +137,12 @@ class PostgresVectorStore:
     def upsert_document(
         self,
         document: VectorDocument,
-        vector: list[float],
+        embedding: EmbeddingResult,
     ) -> VectorStoreResult:
         """Upsert a document row and refresh its embedding when the content changes."""
         document_table = sql.Identifier(self.document_table)
         embedding_table = sql.Identifier(self.embedding_table)
-        vector_value = _vector_literal(vector)
+        vector_value = _vector_literal(embedding.vector)
 
         with psycopg.connect(self.database_url) as connection:
             with connection.cursor() as cursor:
@@ -186,6 +202,7 @@ class PostgresVectorStore:
                         """
                         INSERT INTO {embedding_table} (
                             document_id,
+                            provider,
                             model_name,
                             dimensions,
                             embedding,
@@ -193,25 +210,27 @@ class PostgresVectorStore:
                         )
                         VALUES (
                             %(document_id)s,
+                            %(provider)s,
                             %(model_name)s,
                             %(dimensions)s,
                             %(embedding)s::vector,
                             %(content_checksum)s
                         )
-                        ON CONFLICT (document_id) DO UPDATE SET
-                            model_name = EXCLUDED.model_name,
+                        ON CONFLICT (document_id, provider, model_name) DO UPDATE SET
                             dimensions = EXCLUDED.dimensions,
                             embedding = EXCLUDED.embedding,
                             content_checksum = EXCLUDED.content_checksum,
                             updated_at = NOW()
                         WHERE {embedding_table}.content_checksum IS DISTINCT FROM EXCLUDED.content_checksum
+                           OR {embedding_table}.dimensions IS DISTINCT FROM EXCLUDED.dimensions
                         RETURNING TRUE
                         """
                     ).format(embedding_table=embedding_table),
                     {
                         "document_id": document_id,
-                        "model_name": self.model_name,
-                        "dimensions": self.dimensions,
+                        "provider": embedding.provider,
+                        "model_name": embedding.model_name,
+                        "dimensions": embedding.dimensions,
                         "embedding": vector_value,
                         "content_checksum": document.content_checksum,
                     },
@@ -221,4 +240,3 @@ class PostgresVectorStore:
             connection.commit()
 
         return VectorStoreResult(inserted=bool(inserted), embedding_updated=embedding_updated)
-    

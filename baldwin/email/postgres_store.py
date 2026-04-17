@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from baldwin.embedding import EmbeddingResult
 from baldwin.vector.postgres_store import (
     PostgresVectorStore,
     VectorDocument,
@@ -17,11 +18,9 @@ StoreResult = VectorStoreResult
 class PostgresEmailVectorStore(PostgresVectorStore):
     """Stores normalized emails using the shared vector persistence layer."""
 
-    def __init__(self, database_url: str, dimensions: int, model_name: str):
+    def __init__(self, database_url: str):
         super().__init__(
             database_url=database_url,
-            dimensions=dimensions,
-            model_name=model_name,
             document_table="vector_documents",
             embedding_table="vector_embeddings",
         )
@@ -50,8 +49,7 @@ class PostgresEmailVectorStore(PostgresVectorStore):
     def upsert_email(
         self,
         normalized_email: NormalizedEmail,
-        vector: list[float],
+        embedding: EmbeddingResult,
     ) -> VectorStoreResult:
         """Upsert an email by delegating to the generic document store."""
-        return self.upsert_document(self.to_document(normalized_email), vector)
-    
+        return self.upsert_document(self.to_document(normalized_email), embedding)

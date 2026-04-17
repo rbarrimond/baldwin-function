@@ -1,13 +1,14 @@
 # Inbox Vectorization
 
-This repository can fetch inbox messages from IMAP, normalize them into a stable persistence shape, generate deterministic local vectors, and store both metadata and vectors in PostgreSQL.
+This repository can fetch inbox messages from IMAP, normalize them into a stable persistence shape, generate embeddings through a shared provider layer, and store both metadata and vectors in PostgreSQL.
 
 The persistence layer now uses a generic vector-document store with an email-specific adapter layered on top. The email adapter maps normalized emails into generic vector documents before delegating to PostgreSQL storage.
 
 ## Scope
 
 - The first implementation is a manual script.
-- The current vectorizer is local and deterministic rather than semantic.
+- The default local embedding provider is Ollama over HTTP.
+- Deterministic hashing remains available as a fallback and test baseline.
 - PostgreSQL is expected to have the `pgvector` extension available.
 - Azure PostgreSQL is not provisioned in this repository yet.
 
@@ -20,8 +21,14 @@ The script accepts the following settings:
 - `IMAP_PASSWORD` or `MAIL_APP_PASSWORD`: IMAP password.
 - `IMAP_HOST` (optional): IMAP hostname, default `imap.mail.me.com`.
 - `IMAP_PORT` (optional): IMAP port, default `993`.
-- `EMAIL_VECTOR_DIMENSIONS` (optional): vector dimension count, default `256`.
-- `EMAIL_VECTOR_MODEL` (optional): stored model identifier, default `hashing-v1`.
+- `EMBEDDING_PROVIDER` (optional): provider identifier, default `ollama`.
+- `EMBEDDING_BASE_URL` (optional): provider base URL, default `http://127.0.0.1:11434`.
+- `EMBEDDING_MODEL` (optional): model identifier, default `bge-small-en-v1.5`.
+- `EMBEDDING_TIMEOUT_SECONDS` (optional): HTTP timeout, default `30`.
+- `EMBEDDING_ENABLE_FALLBACK` (optional): whether fallback is enabled, default `true`.
+- `EMBEDDING_FALLBACK_PROVIDER` (optional): fallback provider identifier, default `hashing`.
+- `EMBEDDING_HASH_DIMENSIONS` (optional): hashing vector dimension count, default `256`.
+- `EMAIL_VECTOR_DIMENSIONS` and `EMAIL_VECTOR_MODEL` remain accepted as compatibility aliases.
 
 ## Schema
 
@@ -41,17 +48,19 @@ The script accepts the following settings:
 
 ### `vector_embeddings`
 
-- `document_id BIGINT PRIMARY KEY REFERENCES vector_documents(id) ON DELETE CASCADE`
+- `document_id BIGINT NOT NULL REFERENCES vector_documents(id) ON DELETE CASCADE`
+- `provider TEXT NOT NULL`: embedding provider identifier such as `ollama` or `hashing`
 - `model_name TEXT NOT NULL`
 - `dimensions INTEGER NOT NULL`
 - `embedding VECTOR NOT NULL`
 - `content_checksum TEXT NOT NULL`
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 - `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
+- `PRIMARY KEY (document_id, provider, model_name)`
 
 ## Deduplication
 
-The email adapter prefers `Message-ID` when it is present. If the upstream message does not provide one, the fallback fingerprint is computed from sender, date, subject, and normalized text content. Re-running the script against the same mailbox window is expected to be idempotent.
+The email adapter prefers `Message-ID` when it is present. If the upstream message does not provide one, the fallback fingerprint is computed from sender, date, subject, and normalized text content. Re-running the script against the same mailbox window is expected to be idempotent within the same provider/model space, while still allowing additional embeddings to be stored for other providers or models.
 
 ## Local Run
 
@@ -74,3 +83,4 @@ When this feature moves beyond local development:
 3. Store the connection string in Key Vault.
 4. Resolve the connection string through the existing managed identity and app settings pattern.
 5. Replace bootstrap DDL with explicit migrations before production rollout.
+6. Ensure retrieval selects a single provider/model space rather than mixing embeddings across models.

@@ -58,8 +58,15 @@ These should be set via `app_settings` in Terraform or `local.settings.json` for
 - `SMTP_PASSWORD`
 - `SMTP_FROM` (optional, defaults to `SMTP_USERNAME`)
 - `EMAILS_CONTAINER` (optional, defaults to `emails`)
-- `EMAIL_VECTOR_DIMENSIONS` (optional, defaults to `256`)
-- `EMAIL_VECTOR_MODEL` (optional, defaults to `hashing-v1`)
+- `EMBEDDING_PROVIDER` (optional, defaults to `ollama`)
+- `EMBEDDING_BASE_URL` (optional, defaults to `http://127.0.0.1:11434`)
+- `EMBEDDING_MODEL` (optional, defaults to `bge-small-en-v1.5`)
+- `EMBEDDING_TIMEOUT_SECONDS` (optional, defaults to `30`)
+- `EMBEDDING_ENABLE_FALLBACK` (optional, defaults to `true`)
+- `EMBEDDING_FALLBACK_PROVIDER` (optional, defaults to `hashing`)
+- `EMBEDDING_HASH_DIMENSIONS` (optional, defaults to `256`)
+- `EMAIL_VECTOR_DIMENSIONS` (optional compatibility alias for hashing dimensions)
+- `EMAIL_VECTOR_MODEL` (optional compatibility alias for embedding model)
 - `AzureWebJobsStorage` (optional for local-only scanning, required for blob persistence)
 
 For the vectorization script, `MAIL_USERNAME` and `MAIL_APP_PASSWORD` are also accepted as compatibility aliases for the IMAP credentials.
@@ -84,7 +91,7 @@ curl -X POST "http://localhost:7071/api/summarize-email" \
 
 ## 🧮 Vectorize Inbox To PostgreSQL
 
-The repository includes a manual script that fetches IMAP emails, normalizes them, generates deterministic local vectors, and stores them in PostgreSQL using `pgvector`. The script uses an email-specific adapter over a generic vector-document store.
+The repository includes a manual script that fetches IMAP emails, normalizes them, generates embeddings through a shared provider layer, and stores them in PostgreSQL using `pgvector`. Ollama is the default local provider, and deterministic hashing remains available as a fallback.
 
 ```bash
 python scripts/vectorize_inbox.py --days 3

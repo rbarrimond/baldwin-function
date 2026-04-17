@@ -14,8 +14,8 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # pylint: disable=wrong-import-position
-from baldwin.email import (EmailNormalizer, EmailService, HashingVectorizer,
-                           PostgresEmailVectorStore)
+from baldwin.email import EmailNormalizer, EmailService, PostgresEmailVectorStore
+from baldwin.embedding import build_embedding_service, load_embedding_settings
 
 
 def _status(message: str) -> None:
@@ -111,23 +111,52 @@ class ScriptSettings:
     imap_host: str
     imap_port: int
     database_url: str
-    dimensions: int
-    model_name: str
+    embedding_provider: str
+    embedding_model: str
+    embedding_base_url: str
+    embedding_timeout_seconds: float
+    hashing_dimensions: int
+    fallback_provider: str | None
+    enable_fallback: bool
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=1, help="Inbox lookback window in days.")
     parser.add_argument(
+        "--embedding-provider",
+        default=_get_setting("EMBEDDING_PROVIDER", default="ollama"),
+        help="Embedding provider identifier.",
+    )
+    parser.add_argument(
+        "--embedding-base-url",
+        default=_get_setting("EMBEDDING_BASE_URL", default="http://127.0.0.1:11434"),
+        help="Base URL for the HTTP embedding provider.",
+    )
+    parser.add_argument(
         "--dimensions",
         type=int,
-        default=int(_get_setting("EMAIL_VECTOR_DIMENSIONS", default="256") or "256"),
-        help="Vector dimension size for local hashing vectors.",
+        default=int(
+            _get_setting("EMBEDDING_HASH_DIMENSIONS", "EMAIL_VECTOR_DIMENSIONS", default="256")
+            or "256"
+        ),
+        help="Vector dimension size for hashing fallback embeddings.",
     )
     parser.add_argument(
         "--model-name",
-        default=_get_setting("EMAIL_VECTOR_MODEL", default="hashing-v1"),
+        default=_get_setting("EMBEDDING_MODEL", "EMAIL_VECTOR_MODEL", default="bge-small-en-v1.5"),
         help="Identifier stored with the generated vectors.",
+    )
+    parser.add_argument(
+        "--embedding-timeout-seconds",
+        type=float,
+        default=float(_get_setting("EMBEDDING_TIMEOUT_SECONDS", default="30") or "30"),
+        help="Timeout in seconds for HTTP embedding calls.",
+    )
+    parser.add_argument(
+        "--fallback-provider",
+        default=_get_setting("EMBEDDING_FALLBACK_PROVIDER", default="hashing"),
+        help="Fallback provider identifier to use when the primary provider fails.",
     )
     parser.add_argument(
         "--dry-run",
@@ -144,8 +173,14 @@ def _load_settings(args: argparse.Namespace) -> ScriptSettings:
         imap_host=_get_setting("IMAP_HOST", default="imap.mail.me.com") or "imap.mail.me.com",
         imap_port=int(_get_setting("IMAP_PORT", default="993") or "993"),
         database_url=_get_required_setting("DATABASE_URL"),
-        dimensions=args.dimensions,
-        model_name=args.model_name,
+        embedding_provider=args.embedding_provider,
+        embedding_model=args.model_name,
+        embedding_base_url=args.embedding_base_url,
+        embedding_timeout_seconds=args.embedding_timeout_seconds,
+        hashing_dimensions=args.dimensions,
+        fallback_provider=args.fallback_provider,
+        enable_fallback=(_get_setting("EMBEDDING_ENABLE_FALLBACK", default="true") or "true").lower()
+        not in {"0", "false", "no", "off"},
     )
 
 
@@ -160,8 +195,9 @@ def main() -> int:
     settings = _load_settings(args)
     _status(
         "Configuration resolved: "
-        f"days={args.days} dry_run={args.dry_run} model={settings.model_name} "
-        f"dimensions={settings.dimensions} imap_host={settings.imap_host}:{settings.imap_port}"
+        f"days={args.days} dry_run={args.dry_run} provider={settings.embedding_provider} "
+        f"model={settings.embedding_model} fallback={settings.fallback_provider} "
+        f"imap_host={settings.imap_host}:{settings.imap_port}"
     )
     email_service = EmailService(
         settings.imap_user,
@@ -170,11 +206,21 @@ def main() -> int:
         imap_port=settings.imap_port,
     )
     normalizer = EmailNormalizer()
-    vectorizer = HashingVectorizer(dimensions=settings.dimensions, model_name=settings.model_name)
+    embedding_service = build_embedding_service(
+        load_embedding_settings(
+            {
+                "provider_name": settings.embedding_provider,
+                "model_name": settings.embedding_model,
+                "base_url": settings.embedding_base_url,
+                "timeout_seconds": settings.embedding_timeout_seconds,
+                "hashing_dimensions": settings.hashing_dimensions,
+                "fallback_provider_name": settings.fallback_provider,
+                "enable_fallback": settings.enable_fallback,
+            }
+        )
+    )
     store = PostgresEmailVectorStore(
         database_url=settings.database_url,
-        dimensions=settings.dimensions,
-        model_name=settings.model_name,
     )
 
     _status("Fetching emails from IMAP inbox.")
@@ -196,7 +242,12 @@ def main() -> int:
         subject_label = _display_label(email_message.subject)
         try:
             normalized_email = normalizer.normalize(email_message)
-            vector = vectorizer.vectorize(normalized_email.searchable_text)
+            embedding_result = embedding_service.embed_text(normalized_email.searchable_text)
+            if embedding_result.used_fallback:
+                _status(
+                    "Primary embedding provider failed; using fallback provider "
+                    f"{embedding_result.embedding.provider}. reason={embedding_result.fallback_reason}"
+                )
             if args.dry_run:
                 skipped_count += 1
                 _render_progress(
@@ -209,7 +260,7 @@ def main() -> int:
                 )
                 continue
 
-            result = store.upsert_email(normalized_email, vector)
+            result = store.upsert_email(normalized_email, embedding_result.embedding)
             if result.inserted:
                 inserted_count += 1
             if result.embedding_updated:
