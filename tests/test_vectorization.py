@@ -52,6 +52,25 @@ class EmailNormalizerTests(unittest.TestCase):
         self.assertEqual(first.fingerprint, second.fingerprint)
         self.assertEqual(first.content_checksum, second.content_checksum)
 
+    def test_invalid_dates_are_preserved_as_missing_sent_timestamp(self) -> None:
+        """Invalid email dates should degrade to a missing sent_at value."""
+        email_message = Email(
+            id="<message-123@example.com>",
+            subject="Subject",
+            sender="sender@example.com",
+            to=["recipient@example.com"],
+            cc=None,
+            bcc=None,
+            reply_to=None,
+            date="not-a-real-email-date",
+            body="Body text",
+            headers={"Message-ID": "<message-123@example.com>"},
+        )
+
+        normalized = EmailNormalizer().normalize(email_message)
+
+        self.assertIsNone(normalized.sent_at)
+
 
 class HashingVectorizerTests(unittest.TestCase):
     """Behavioral tests for deterministic vector generation."""

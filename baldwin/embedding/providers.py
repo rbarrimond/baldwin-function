@@ -11,6 +11,8 @@ from hashlib import sha256
 from typing import Any, Mapping, Protocol
 from urllib import error, request
 
+from baldwin.exceptions import BaldwinError
+
 
 DEFAULT_EMBEDDING_PROVIDER = "ollama"
 DEFAULT_EMBEDDING_BASE_URL = "http://127.0.0.1:11434"
@@ -22,7 +24,7 @@ DEFAULT_FALLBACK_PROVIDER = "hashing"
 TEXT_REQUIRED_ERROR = "Text is required for embedding."
 
 
-class EmbeddingProviderError(RuntimeError):
+class EmbeddingProviderError(BaldwinError):
     """Raised when an embedding provider cannot produce embeddings."""
 
 

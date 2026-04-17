@@ -16,6 +16,8 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 
+from baldwin.exceptions import EmailFetchError
+
 
 class Email(BaseModel):
     """
@@ -141,7 +143,10 @@ class EmailService:
         return mail
 
     def _fetch_email_batch(self, mail: imaplib.IMAP4, email_id: bytes) -> List[Email]:
-        _, message_data = mail.fetch(email_id.decode("ascii"), "(BODY.PEEK[])")
+        status, message_data = mail.fetch(email_id.decode("ascii"), "(BODY.PEEK[])")
+        if status != "OK":
+            raise EmailFetchError(f"Unable to fetch email payload for id={email_id.decode('ascii')}.")
+
         parsed_messages: List[Email] = []
 
         for response_part in message_data:
@@ -171,14 +176,19 @@ class EmailService:
         if days < 1:
             raise ValueError("days must be greater than 0")
 
-        mail = self._connect_mailbox()
+        mail: imaplib.IMAP4 | None = None
+        pending_error: BaseException | None = None
         try:
+            mail = self._connect_mailbox()
             mail.login(self.imap_user, self.imap_pass)
             status, _ = mail.select("INBOX")
             if status != "OK":
-                raise RuntimeError("Unable to select inbox.")
+                raise EmailFetchError("Unable to select inbox.")
 
-            _, data = mail.search(None, self._build_since_query(days))
+            status, data = mail.search(None, self._build_since_query(days))
+            if status != "OK":
+                raise EmailFetchError("Unable to search the inbox.")
+
             email_ids = data[0].split() if data and data[0] else []
 
             emails: List[Email] = []
@@ -186,6 +196,17 @@ class EmailService:
                 emails.extend(self._fetch_email_batch(mail, email_id))
 
             return emails
+        except EmailFetchError as exc:
+            pending_error = exc
+            raise
+        except (imaplib.IMAP4.error, OSError) as exc:
+            pending_error = exc
+            raise EmailFetchError("Failed to fetch emails from the IMAP inbox.") from exc
         finally:
-            mail.logout()
+            if mail is not None:
+                try:
+                    mail.logout()
+                except (imaplib.IMAP4.error, OSError) as exc:
+                    if pending_error is None:
+                        raise EmailFetchError("Failed to close the IMAP mailbox session.") from exc
             

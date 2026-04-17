@@ -27,7 +27,7 @@ from azure.core.exceptions import AzureError, ResourceExistsError
 from azure.functions import HttpRequest, HttpResponse
 from azure.storage.blob import BlobServiceClient
 
-from baldwin.email import EmailService
+from baldwin.email import EmailDeliveryError, EmailFetchError, EmailService
 
 app = func.FunctionApp()
 
@@ -36,6 +36,10 @@ MARKDOWN_MIMETYPE = "text/markdown"
 DEFAULT_EMAIL_CONTAINER = "emails"
 DEFAULT_SUMMARY_WORD_LIMIT = 48
 INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error."
+
+
+def _is_caused_by(exc: BaseException, expected_type: type[BaseException]) -> bool:
+    return isinstance(exc.__cause__, expected_type)
 
 
 def _json_response(payload: dict | list, status_code: int = 200) -> HttpResponse:
@@ -147,15 +151,18 @@ def _send_digest_email(to_address: str, subject: str, content: str) -> str:
     message["Subject"] = subject
     message.set_content(content)
 
-    with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as smtp_client:
-        smtp_client.ehlo()
-        smtp_client.starttls()
-        smtp_client.ehlo()
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as smtp_client:
+            smtp_client.ehlo()
+            smtp_client.starttls()
+            smtp_client.ehlo()
 
-        if smtp_username and smtp_password:
-            smtp_client.login(smtp_username, smtp_password)
+            if smtp_username and smtp_password:
+                smtp_client.login(smtp_username, smtp_password)
 
-        smtp_client.send_message(message)
+            smtp_client.send_message(message)
+    except (smtplib.SMTPException, OSError) as exc:
+        raise EmailDeliveryError("Unable to send the digest email.") from exc
 
     return from_address
 
@@ -186,10 +193,14 @@ def scan_mail(req: HttpRequest) -> HttpResponse:
     except ValueError as exc:
         logging.warning("Invalid request for scan_mail: %s", exc)
         return _json_response({"error": str(exc)}, status_code=400)
-    except imaplib.IMAP4.error as exc:
-        logging.warning("IMAP request failed for scan_mail: %s", exc)
-        return _json_response({"error": "Unable to read from the IMAP inbox."}, status_code=502)
-    except (AzureError, RuntimeError, OSError):
+    except EmailFetchError as exc:
+        if _is_caused_by(exc, imaplib.IMAP4.error):
+            logging.warning("IMAP request failed for scan_mail: %s", exc)
+            return _json_response({"error": "Unable to read from the IMAP inbox."}, status_code=502)
+
+        logging.exception("Unexpected email fetch error in scan_mail")
+        return _json_response({"error": INTERNAL_SERVER_ERROR_MESSAGE}, status_code=500)
+    except AzureError:
         logging.exception("Unexpected error in scan_mail")
         return _json_response({"error": INTERNAL_SERVER_ERROR_MESSAGE}, status_code=500)
 
@@ -264,9 +275,10 @@ def send_digest(req: HttpRequest) -> HttpResponse:
     except ValueError as exc:
         logging.warning("Invalid request for send_digest: %s", exc)
         return _json_response({"error": str(exc)}, status_code=400)
-    except smtplib.SMTPException as exc:
-        logging.warning("SMTP request failed for send_digest: %s", exc)
-        return _json_response({"error": "Unable to send the digest email."}, status_code=502)
-    except OSError:
-        logging.exception("Unexpected error in send_digest")
+    except EmailDeliveryError as exc:
+        if _is_caused_by(exc, smtplib.SMTPException):
+            logging.warning("SMTP request failed for send_digest: %s", exc)
+            return _json_response({"error": "Unable to send the digest email."}, status_code=502)
+
+        logging.exception("Unexpected email delivery error in send_digest")
         return _json_response({"error": INTERNAL_SERVER_ERROR_MESSAGE}, status_code=500)

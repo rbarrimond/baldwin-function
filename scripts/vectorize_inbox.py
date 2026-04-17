@@ -14,12 +14,17 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # pylint: disable=wrong-import-position
-from baldwin.email import EmailNormalizer, EmailService, PostgresEmailVectorStore
-from baldwin.embedding import build_embedding_service, load_embedding_settings
+from baldwin.email import EmailFetchError, EmailNormalizer, EmailService, PostgresEmailVectorStore
+from baldwin.embedding import EmbeddingProviderError, build_embedding_service, load_embedding_settings
+from baldwin.vector import VectorStoreError
 
 
 def _status(message: str) -> None:
     print(f"[vectorize-inbox] {message}", file=sys.stderr)
+
+
+def _is_caused_by(exc: BaseException, expected_type: type[BaseException]) -> bool:
+    return isinstance(exc.__cause__, expected_type)
 
 
 def _display_label(value: str, fallback: str = "(no subject)") -> str:
@@ -341,14 +346,17 @@ if __name__ == "__main__":
     except ValueError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    except imaplib.IMAP4.error as exc:
-        print(
-            "IMAP authentication failed. Check IMAP_USER or MAIL_USERNAME and "
-            "IMAP_PASSWORD or MAIL_APP_PASSWORD in local.settings.json or your environment.",
-            file=sys.stderr,
-        )
-        print(str(exc), file=sys.stderr)
+    except EmailFetchError as exc:
+        if _is_caused_by(exc, imaplib.IMAP4.error):
+            print(
+                "IMAP authentication failed. Check IMAP_USER or MAIL_USERNAME and "
+                "IMAP_PASSWORD or MAIL_APP_PASSWORD in local.settings.json or your environment.",
+                file=sys.stderr,
+            )
+            print(str(exc.__cause__), file=sys.stderr)
+        else:
+            print(f"Runtime error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    except (OSError, RuntimeError) as exc:
+    except (EmbeddingProviderError, OSError, VectorStoreError) as exc:
         print(f"Runtime error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
