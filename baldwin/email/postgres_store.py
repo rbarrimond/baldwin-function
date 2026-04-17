@@ -38,6 +38,7 @@ class PostgresEmailVectorStore:
         self.model_name = model_name
 
     def bootstrap(self) -> None:
+        """Create the pgvector extension and required tables when absent."""
         with psycopg.connect(self.database_url, autocommit=True) as connection:
             with connection.cursor() as cursor:
                 cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -62,12 +63,12 @@ class PostgresEmailVectorStore:
                     """
                 )
                 cursor.execute(
-                    f"""
+                    """
                     CREATE TABLE IF NOT EXISTS email_embeddings (
                         email_id BIGINT PRIMARY KEY REFERENCES emails(id) ON DELETE CASCADE,
                         model_name TEXT NOT NULL,
                         dimensions INTEGER NOT NULL,
-                        embedding VECTOR({self.dimensions}) NOT NULL,
+                        embedding VECTOR NOT NULL,
                         content_checksum TEXT NOT NULL,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -75,10 +76,12 @@ class PostgresEmailVectorStore:
                     """
                 )
                 cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_email_embeddings_model_name ON email_embeddings(model_name)"
+                    "CREATE INDEX IF NOT EXISTS idx_email_embeddings_model_name "
+                    "ON email_embeddings(model_name)"
                 )
 
     def upsert_email(self, normalized_email: NormalizedEmail, vector: list[float]) -> StoreResult:
+        """Upsert an email row and refresh its embedding when the content changes."""
         vector_value = _vector_literal(vector)
         with psycopg.connect(self.database_url) as connection:
             with connection.cursor() as cursor:
@@ -138,7 +141,11 @@ class PostgresEmailVectorStore:
                         "content_checksum": normalized_email.content_checksum,
                     },
                 )
-                email_id, inserted = cursor.fetchone()
+                email_row = cursor.fetchone()
+                if email_row is None:
+                    raise RuntimeError("Failed to upsert email metadata.")
+
+                email_id, inserted = email_row
                 cursor.execute(
                     """
                     INSERT INTO email_embeddings (
@@ -177,3 +184,4 @@ class PostgresEmailVectorStore:
             connection.commit()
 
         return StoreResult(inserted=bool(inserted), embedding_updated=embedding_updated)
+    

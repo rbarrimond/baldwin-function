@@ -27,4 +27,4 @@ vectorize-inbox = "scripts.vectorize_inbox:main"
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["BaldwinEmail*", "scripts*"]
+include = ["baldwin*", "scripts*"]

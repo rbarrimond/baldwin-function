@@ -52,9 +52,8 @@ class EmailService:
 
     @staticmethod
     def _build_since_query(days: int) -> str:
-        return '(SINCE "{}")'.format(
-            (datetime.date.today() - datetime.timedelta(days=days)).strftime("%d-%b-%Y")
-        )
+        since_date = (datetime.date.today() - datetime.timedelta(days=days)).strftime("%d-%b-%Y")
+        return f'(SINCE "{since_date}")'
 
     @staticmethod
     def _decode_header_value(raw_value: Optional[str]) -> str:
@@ -163,3 +162,4 @@ class EmailService:
             return emails
         finally:
             mail.logout()
+            

@@ -27,7 +27,7 @@ from azure.core.exceptions import AzureError, ResourceExistsError
 from azure.functions import HttpRequest, HttpResponse
 from azure.storage.blob import BlobServiceClient
 
-from BaldwinEmail import EmailService
+from baldwin.email import EmailService
 
 app = func.FunctionApp()
 

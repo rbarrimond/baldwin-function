@@ -58,7 +58,13 @@ class EmailNormalizer:
     @staticmethod
     def _build_recipients(email_message: Email) -> list[str]:
         recipients: list[str] = []
-        for group in (email_message.to, email_message.cc, email_message.bcc, email_message.reply_to):
+        recipient_groups = (
+            email_message.to,
+            email_message.cc,
+            email_message.bcc,
+            email_message.reply_to,
+        )
+        for group in recipient_groups:
             if group:
                 recipients.extend(address for address in group if address)
         return recipients
@@ -88,6 +94,7 @@ class EmailNormalizer:
         return hashlib.sha256(fallback.encode("utf-8")).hexdigest()
 
     def normalize(self, email_message: Email) -> NormalizedEmail:
+        """Normalize an inbox email into the canonical persistence shape."""
         subject = _normalize_whitespace(email_message.subject)
         body = _normalize_whitespace(email_message.body)
         searchable_text = self._build_searchable_text(subject, body)
@@ -121,6 +128,7 @@ class HashingVectorizer:
         self.model_name = model_name
 
     def vectorize(self, text: str) -> list[float]:
+        """Convert input text into a deterministic dense vector."""
         normalized_text = _normalize_whitespace(text)
         if not normalized_text:
             raise ValueError("Text is required for vectorization.")
@@ -137,3 +145,4 @@ class HashingVectorizer:
             return vector
 
         return [value / magnitude for value in vector]
+    

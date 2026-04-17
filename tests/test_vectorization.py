@@ -2,11 +2,14 @@
 
 import unittest
 
-from BaldwinEmail import Email, EmailNormalizer, HashingVectorizer
+from baldwin.email import Email, EmailNormalizer, HashingVectorizer
 
 
 class EmailNormalizerTests(unittest.TestCase):
+    """Behavioral tests for email normalization."""
+
     def test_message_id_drives_stable_fingerprint(self) -> None:
+        """The message id should be preserved and used as the stable identity input."""
         email_message = Email(
             id="<message-123@example.com>",
             subject="Subject",
@@ -28,6 +31,7 @@ class EmailNormalizerTests(unittest.TestCase):
         self.assertIn("First line Second line", normalized.searchable_text)
 
     def test_fallback_fingerprint_is_deterministic(self) -> None:
+        """Fallback fingerprints should remain stable across identical inputs."""
         email_message = Email(
             id=None,
             subject="Status update",
@@ -50,7 +54,10 @@ class EmailNormalizerTests(unittest.TestCase):
 
 
 class HashingVectorizerTests(unittest.TestCase):
+    """Behavioral tests for deterministic vector generation."""
+
     def test_vectorizer_is_deterministic_and_normalized(self) -> None:
+        """Repeated calls for the same text should produce the same normalized vector."""
         vectorizer = HashingVectorizer(dimensions=32)
 
         first = vectorizer.vectorize("Alpha beta beta")
@@ -63,3 +70,4 @@ class HashingVectorizerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+    

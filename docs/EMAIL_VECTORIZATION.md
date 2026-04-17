@@ -43,7 +43,7 @@ The script accepts the following settings:
 - `email_id BIGINT PRIMARY KEY REFERENCES emails(id) ON DELETE CASCADE`
 - `model_name TEXT NOT NULL`
 - `dimensions INTEGER NOT NULL`
-- `embedding VECTOR(n) NOT NULL`
+- `embedding VECTOR NOT NULL`
 - `content_checksum TEXT NOT NULL`
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 - `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`

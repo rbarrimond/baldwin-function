@@ -16,9 +16,10 @@ The following HTTP-triggered Azure Functions are implemented in `function_app.py
 
 ``` plaintext
 baldwin-function/
-├── BaldwinEmail/
-│   ├── __init__.py         # Package exports for email helpers
-│   └── email_service.py    # IMAP parsing and mailbox access helpers
+├── baldwin/
+│   └── email/
+│       ├── __init__.py     # Package exports for email helpers
+│       └── email_service.py # IMAP parsing and mailbox access helpers
 ├── scripts/
 │   └── vectorize_inbox.py  # Manual inbox vectorization pipeline for PostgreSQL
 ├── function_app.py         # Core function definitions using @app decorators
@@ -32,7 +33,7 @@ baldwin-function/
 
 This function app is designed to be deployed via Terraform using `zip_deploy_file` or an equivalent CI packaging step. A deployment package is expected to include the function source files and `requirements.txt`.
 
-Application modules now live under the top-level `BaldwinEmail` package so imports remain explicit as the codebase grows.
+Application modules now live under the `baldwin.email` package so imports remain explicit as the codebase grows.
 
 Example Terraform usage:
 

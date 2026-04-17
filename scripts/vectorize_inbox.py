@@ -7,7 +7,12 @@ import os
 import sys
 from dataclasses import dataclass
 
-from BaldwinEmail import EmailNormalizer, EmailService, HashingVectorizer, PostgresEmailVectorStore
+from baldwin.email import (
+    EmailNormalizer,
+    EmailService,
+    HashingVectorizer,
+    PostgresEmailVectorStore,
+)
 
 
 def _get_setting(*names: str, default: str | None = None) -> str | None:
@@ -27,6 +32,8 @@ def _get_required_setting(*names: str) -> str:
 
 @dataclass(frozen=True)
 class ScriptSettings:
+    """Resolved runtime settings for inbox vectorization."""
+
     imap_user: str
     imap_password: str
     database_url: str
@@ -67,6 +74,7 @@ def _load_settings(args: argparse.Namespace) -> ScriptSettings:
 
 
 def main() -> int:
+    """Run the inbox fetch, vectorization, and persistence workflow."""
     args = _parse_args()
     if args.days < 1 or args.days > 365:
         raise ValueError("--days must be between 1 and 365.")
@@ -109,7 +117,8 @@ def main() -> int:
 
     print(
         "Vectorization run complete: "
-        f"fetched={fetched_count} inserted={inserted_count} embedding_updates={updated_count} skipped={skipped_count}"
+        f"fetched={fetched_count} inserted={inserted_count} "
+        f"embedding_updates={updated_count} skipped={skipped_count}"
     )
     return 0
 
