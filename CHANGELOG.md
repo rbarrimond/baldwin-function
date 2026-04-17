@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 - 2026-04-17
+
+- Renamed the mailbox vectorization entrypoint to `scripts/vectorize_mailbox.py` and kept `scripts/vectorize_inbox.py` as a compatibility shim.
+- Collapsed duplicate messages seen across multiple scanned folders into one persisted document per fingerprint while preserving ordered folder provenance in `metadata.folders`.
+- Bumped the package version to reflect the mailbox ingestion and persisted metadata change.
+
 ## 0.4.2 - 2026-04-17
 
 - Broadened IMAP scanning from a hard-coded inbox flow to one-or-more configured or requested IMAP folders per HTTP request and CLI run.

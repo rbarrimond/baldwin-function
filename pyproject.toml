@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "baldwin-function"
-version = "0.4.0"
-description = "Azure Functions backend for Baldwin inbox workflows."
+version = "0.5.0"
+description = "Azure Functions backend for Baldwin mailbox workflows."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -21,6 +21,7 @@ dev = [
 ]
 
 [project.scripts]
+vectorize-mailbox = "scripts.vectorize_mailbox:main"
 vectorize-inbox = "scripts.vectorize_inbox:main"
 
 [tool.setuptools]

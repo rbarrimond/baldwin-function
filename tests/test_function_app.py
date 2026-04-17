@@ -13,6 +13,7 @@ from baldwin.email import EmailDeliveryError, EmailFetchError, MailboxFolders
 
 
 def _json_request(method: str, url: str, payload: dict | None = None, params: dict | None = None) -> func.HttpRequest:
+    """Helper to create an HttpRequest with a JSON body and query parameters."""
     return func.HttpRequest(
         method=method,
         url=url,
@@ -27,6 +28,7 @@ class FunctionAppEndpointTests(unittest.TestCase):
     """HTTP-level regression tests for function handlers."""
 
     def test_summarize_email_returns_summary_payload(self) -> None:
+        """The summarize_email endpoint should return a JSON payload with the generated summary."""
         response = function_app.summarize_email(
             _json_request(
                 "POST",
@@ -39,6 +41,7 @@ class FunctionAppEndpointTests(unittest.TestCase):
         self.assertEqual(json.loads(response.get_body()), {"summary": "Agenda for tomorrow."})
 
     def test_build_digest_returns_markdown_response(self) -> None:
+        """The build_digest endpoint should return a Markdown-formatted digest in the response body."""
         response = function_app.build_digest(
             _json_request(
                 "POST",
@@ -53,6 +56,8 @@ class FunctionAppEndpointTests(unittest.TestCase):
         self.assertEqual(response.mimetype, "text/markdown")
 
     def test_scan_mail_returns_502_for_imap_failures(self) -> None:
+        """The scan_mail endpoint should return a 502 status code with a generic error message
+          if the mailbox scan service raises an EmailFetchError due to IMAP issues."""
         def raise_imap_failure(days: int, folders: MailboxFolders) -> list[dict]:
             del days, folders
             try:
@@ -69,6 +74,7 @@ class FunctionAppEndpointTests(unittest.TestCase):
         self.assertEqual(json.loads(response.get_body()), {"error": "Unable to read from the requested IMAP folders."})
 
     def test_scan_mail_passes_requested_folders_to_service(self) -> None:
+        """The scan_mail endpoint should pass the requested IMAP folders to the mailbox scan service."""
         with patch.object(function_app.HANDLERS.mailbox_scan_service, "fetch_recent_emails", return_value=[]) as fetch_recent_emails:
             response = function_app.scan_mail(
                 _json_request("GET", "http://localhost/api/scan-mail", params={"days": "1", "folders": "INBOX,Archive"})
@@ -79,6 +85,8 @@ class FunctionAppEndpointTests(unittest.TestCase):
         self.assertEqual(fetch_recent_emails.call_args.args[1].folders, ("INBOX", "Archive"))
 
     def test_send_digest_returns_502_for_smtp_failures(self) -> None:
+        """The send_digest endpoint should return a 502 status code with a generic error message
+        if the digest delivery service raises an EmailDeliveryError due to SMTP issues."""
         def raise_smtp_failure(to_address: str, subject: str, content: str) -> str:
             del to_address, subject, content
             try:
@@ -99,6 +107,8 @@ class FunctionAppEndpointTests(unittest.TestCase):
         self.assertEqual(json.loads(response.get_body()), {"error": "Unable to send the digest email."})
 
     def test_send_digest_returns_400_for_missing_fields(self) -> None:
+        """The send_digest endpoint should return a 400 status code with a generic error message
+        if the request is missing required fields (to, subject, or content)."""
         response = function_app.send_digest(
             _json_request("POST", "http://localhost/api/send-digest", {"to": "user@example.com"})
         )

@@ -6,10 +6,11 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from baldwin.embedding import EmbeddingResult
-from baldwin.exceptions import VectorStoreError
 import psycopg
 from psycopg import sql
+
+from baldwin.embedding import EmbeddingResult
+from baldwin.exceptions import VectorStoreError
 
 
 def _vector_literal(vector: list[float]) -> str:

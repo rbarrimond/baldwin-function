@@ -43,7 +43,7 @@ The script accepts the following settings:
 - `title TEXT NOT NULL`
 - `body TEXT NOT NULL`
 - `searchable_text TEXT NOT NULL`: normalized text used for vector generation.
-- `metadata JSONB NOT NULL`: email-specific fields such as sender, recipients, raw date, parsed sent timestamp, source folder, and headers.
+- `metadata JSONB NOT NULL`: email-specific fields such as sender, recipients, raw date, parsed sent timestamp, primary source folder, folder provenance list, and headers.
 - `content_checksum TEXT NOT NULL`: checksum used to detect embedding refreshes.
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 - `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
@@ -64,6 +64,8 @@ The script accepts the following settings:
 
 The email adapter prefers `Message-ID` when it is present. If the upstream message does not provide one, the fallback fingerprint is computed from sender, date, subject, and normalized text content. Re-running the script against the same mailbox-folder window is expected to be idempotent within the same provider-model space, while still allowing additional embeddings to be stored for other providers or models.
 
+When the same message appears in multiple scanned folders, the mailbox vectorization runtime collapses those duplicates into one persisted document and stores folder provenance in `metadata.folders`, while `metadata.folder` preserves the first folder as a compatibility alias.
+
 ## Long Email Embeddings
 
 For Ollama-backed embeddings, long normalized emails are first attempted as a single input. If Ollama returns a context-length error, the runtime recursively splits the text on paragraph or whitespace boundaries, embeds the smaller chunks, and stores one normalized length-weighted aggregate vector for the original document. This keeps one embedding row per document/provider/model while reducing unnecessary fallback to hashing.
@@ -71,14 +73,16 @@ For Ollama-backed embeddings, long normalized emails are first attempted as a si
 ## Local Run
 
 ```bash
-python scripts/vectorize_inbox.py --days 3 --folder INBOX --folder Archive
+python scripts/vectorize_mailbox.py --days 3 --folder INBOX --folder Archive
 ```
 
 To validate connectivity without writes:
 
 ```bash
-python scripts/vectorize_inbox.py --days 1 --folder INBOX --folder Archive --dry-run
+python scripts/vectorize_mailbox.py --days 1 --folder INBOX --folder Archive --dry-run
 ```
+
+The legacy `scripts/vectorize_inbox.py` entrypoint remains available as a compatibility shim.
 
 ## Azure Promotion Path
 

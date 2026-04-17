@@ -1,11 +1,11 @@
-"""Unit tests for vectorize_inbox script helpers."""
+"""Unit tests for mailbox vectorization script helpers."""
 
 import argparse
 import unittest
 from unittest.mock import patch
 
 from baldwin.email import Email
-from scripts.vectorize_inbox import _build_progress_label, _format_chunking_status, _load_settings
+from scripts.vectorize_mailbox import _build_progress_label, _format_chunking_status, _load_settings, _normalize_emails
 
 
 class VectorizeInboxLoggingTests(unittest.TestCase):
@@ -24,22 +24,10 @@ class VectorizeInboxLoggingTests(unittest.TestCase):
 
     def test_build_progress_label_prefixes_folder_when_present(self) -> None:
         label = _build_progress_label(
-            Email(
-                id=None,
-                subject="Subject",
-                sender="sender@example.com",
-                to=None,
-                cc=None,
-                bcc=None,
-                reply_to=None,
-                date="Fri, 11 Apr 2026 09:15:00 +0000",
-                body="Body",
-                headers={},
-                folder="Archive",
-            )
+            type("NormalizedEmail", (), {"subject": "Subject", "folders": ["Archive", "Receipts"]})()
         )
 
-        self.assertEqual(label, "[Archive] Subject")
+        self.assertEqual(label, "[Archive,Receipts] Subject")
 
 
 class VectorizeInboxSettingsTests(unittest.TestCase):
@@ -71,6 +59,41 @@ class VectorizeInboxSettingsTests(unittest.TestCase):
         settings = _load_settings(args)
 
         self.assertEqual(settings.imap_folders.folders, ("Receipts", "Archive"))
+
+    def test_normalize_emails_collapses_duplicate_folders(self) -> None:
+        emails = [
+            Email(
+                id="<message-123@example.com>",
+                subject="Subject",
+                sender="sender@example.com",
+                to=["recipient@example.com"],
+                cc=None,
+                bcc=None,
+                reply_to=None,
+                date="Fri, 11 Apr 2026 09:15:00 +0000",
+                body="Body",
+                headers={"Message-ID": "<message-123@example.com>"},
+                folder="INBOX",
+            ),
+            Email(
+                id="<message-123@example.com>",
+                subject="Subject",
+                sender="sender@example.com",
+                to=["recipient@example.com"],
+                cc=None,
+                bcc=None,
+                reply_to=None,
+                date="Fri, 11 Apr 2026 09:15:00 +0000",
+                body="Body",
+                headers={"Message-ID": "<message-123@example.com>"},
+                folder="Archive",
+            ),
+        ]
+
+        normalized = _normalize_emails(emails, __import__("baldwin.email", fromlist=["EmailNormalizer"]).EmailNormalizer())
+
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0].folders, ["INBOX", "Archive"])
 
 
 if __name__ == "__main__":

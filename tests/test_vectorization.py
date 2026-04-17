@@ -27,7 +27,7 @@ class EmailNormalizerTests(unittest.TestCase):
 
         self.assertEqual(normalized.source_message_id, "<message-123@example.com>")
         self.assertEqual(normalized.recipients, ["recipient@example.com"])
-        self.assertIsNone(normalized.folder)
+        self.assertEqual(normalized.folders, [])
         self.assertIn("Subject", normalized.searchable_text)
         self.assertIn("First line Second line", normalized.searchable_text)
 
@@ -71,6 +71,45 @@ class EmailNormalizerTests(unittest.TestCase):
         normalized = EmailNormalizer().normalize(email_message)
 
         self.assertIsNone(normalized.sent_at)
+
+    def test_merge_duplicates_preserves_folder_provenance(self) -> None:
+        """Duplicate normalized emails should collapse into one record with ordered folder provenance."""
+        normalizer = EmailNormalizer()
+        inbox_email = normalizer.normalize(
+            Email(
+                id="<message-123@example.com>",
+                subject="Subject",
+                sender="sender@example.com",
+                to=["recipient@example.com"],
+                cc=None,
+                bcc=None,
+                reply_to=None,
+                date="Fri, 11 Apr 2026 09:15:00 +0000",
+                body="Body text",
+                headers={"Message-ID": "<message-123@example.com>"},
+                folder="INBOX",
+            )
+        )
+        archive_email = normalizer.normalize(
+            Email(
+                id="<message-123@example.com>",
+                subject="Subject",
+                sender="sender@example.com",
+                to=["recipient@example.com"],
+                cc=None,
+                bcc=None,
+                reply_to=None,
+                date="Fri, 11 Apr 2026 09:15:00 +0000",
+                body="Body text",
+                headers={"Message-ID": "<message-123@example.com>"},
+                folder="Archive",
+            )
+        )
+
+        merged = normalizer.merge_duplicates([inbox_email, archive_email])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].folders, ["INBOX", "Archive"])
 
 
 class HashingVectorizerTests(unittest.TestCase):
@@ -120,6 +159,7 @@ class PostgresEmailVectorStoreTests(unittest.TestCase):
         self.assertEqual(document.content_checksum, normalized_email.content_checksum)
         self.assertEqual(document.metadata["sender"], "sender@example.com")
         self.assertEqual(document.metadata["folder"], "Archive")
+        self.assertEqual(document.metadata["folders"], ["Archive"])
         self.assertEqual(
             document.metadata["recipients"],
             ["recipient@example.com", "cc@example.com", "reply@example.com"],

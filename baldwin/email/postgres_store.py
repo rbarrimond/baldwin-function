@@ -33,7 +33,8 @@ class PostgresEmailVectorStore(PostgresVectorStore):
             "recipients": normalized_email.recipients,
             "raw_date": normalized_email.raw_date,
             "sent_at": normalized_email.sent_at,
-            "folder": normalized_email.folder,
+            "folder": normalized_email.folders[0] if normalized_email.folders else None,
+            "folders": normalized_email.folders,
             "headers": normalized_email.headers,
         }
         return VectorDocument(

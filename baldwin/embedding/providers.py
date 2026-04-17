@@ -168,6 +168,7 @@ class HashingEmbeddingProvider:
         self.provider_name = provider_name
 
     def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
+        """Convert input texts into deterministic dense vectors using feature hashing."""
         if not texts:
             raise ValueError("texts are required for embedding")
 
@@ -223,6 +224,7 @@ class OllamaEmbeddingProvider:
         self.provider_name = provider_name
 
     def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
+        """Convert input texts into embedding vectors by making requests to the Ollama API."""
         if not texts:
             raise ValueError("texts are required for embedding")
 

@@ -32,15 +32,18 @@ class EnvironmentSettings:
         self.environ = environ or os.environ
 
     def get_required(self, name: str) -> str:
+        """Get a required setting value or raise an error if it's missing."""
         value = self.environ.get(name)
         if not value:
             raise ValueError(f"App setting '{name}' is required.")
         return value
 
     def get(self, name: str, default: str | None = None) -> str | None:
+        """Get an optional setting value or return a default if it's missing."""
         return self.environ.get(name, default)
 
     def get_int(self, name: str, default: int) -> int:
+        """Get an optional integer setting value or return a default if it's missing."""
         raw_value = self.environ.get(name)
         if not raw_value:
             return default
@@ -70,6 +73,7 @@ class MailboxRequestParser:
         return days
 
     def parse_scan_request(self, req: HttpRequest) -> MailScanRequest:
+        """Parse the query parameters from a mailbox scan HTTP request."""
         raw_folders = req.params.get("folders") or req.params.get("folder")
         default_folders = self.settings.get("IMAP_FOLDERS")
         return MailScanRequest(
@@ -86,6 +90,7 @@ class ResponseFactory:
 
     @staticmethod
     def json(payload: dict | list, status_code: int = 200) -> HttpResponse:
+        """Serialize a JSON payload into an HTTP response with the appropriate content type."""
         return HttpResponse(
             json.dumps(payload),
             status_code=status_code,
@@ -94,6 +99,7 @@ class ResponseFactory:
 
     @staticmethod
     def markdown(content: str, status_code: int = 200) -> HttpResponse:
+        """Create an HTTP response with Markdown content and the appropriate content type."""
         return HttpResponse(content, status_code=status_code, mimetype=MARKDOWN_MIMETYPE)
 
 
@@ -111,6 +117,7 @@ class EmailArchiveStore:
         return f"{folder}/{timestamp}_{subject.strip('_') or 'email'}.json"
 
     def persist(self, email_payloads: list[dict[str, Any]]) -> None:
+        """Persist email payloads to blob storage if configured, otherwise skip with a log message."""
         connection_string = self.settings.get("AzureWebJobsStorage")
         if not connection_string:
             logging.info("Skipping blob persistence because AzureWebJobsStorage is not configured.")
@@ -144,6 +151,7 @@ class MailboxScanService:
         return email_message.dict()
 
     def fetch_recent_emails(self, days: int, folders: MailboxFolders) -> list[dict[str, Any]]:
+        """Fetch recent emails from the specified IMAP folders and return them as dictionaries."""
         email_service = EmailService(
             self.settings.get_required("IMAP_USER"),
             self.settings.get_required("IMAP_PASSWORD"),
@@ -162,6 +170,7 @@ class SummaryService:
     """Summarize individual email bodies for the HTTP API."""
 
     def summarize(self, body: str) -> str:
+        """Generate a concise summary of an email body, prioritizing the first sentence or truncating to a word limit."""
         normalized = " ".join(body.split())
         if not normalized:
             raise ValueError("Email body is required for summarization.")
@@ -199,6 +208,7 @@ class DigestBuilder:
         return digest_items
 
     def build(self, summaries: list[Any], audience: str) -> str:
+        """Construct a Markdown digest from a list of summaries and an audience name."""
         digest = f"## Daily Digest for {audience.capitalize()}\n\n"
         for item in self._normalize_digest_items(summaries):
             digest += f"- {item}\n"
@@ -212,6 +222,7 @@ class DigestDeliveryService:
         self.settings = settings
 
     def send(self, to_address: str, subject: str, content: str) -> str:
+        """Send a digest email to the specified recipient with the given subject and content, returning the sender address."""
         smtp_server = self.settings.get_required("SMTP_SERVER")
         smtp_port = int(self.settings.get("SMTP_PORT", "587") or "587")
         smtp_username = self.settings.get("SMTP_USERNAME")
@@ -265,6 +276,7 @@ class MailboxHttpHandlers:
         return isinstance(exc.__cause__, expected_type)
 
     def scan_mail(self, req: HttpRequest) -> HttpResponse:
+        """Handle an HTTP request to scan mailbox folders and return recent emails as JSON."""
         try:
             scan_request = self.request_parser.parse_scan_request(req)
             email_payloads = self.mailbox_scan_service.fetch_recent_emails(
@@ -287,6 +299,7 @@ class MailboxHttpHandlers:
             return self.response_factory.json({"error": INTERNAL_SERVER_ERROR_MESSAGE}, status_code=500)
 
     def summarize_email(self, req: HttpRequest) -> HttpResponse:
+        """Handle an HTTP request to summarize an email body and return the summary as JSON."""
         try:
             data = req.get_json()
             summary = self.summary_service.summarize(str(data.get("body", "")))
@@ -296,6 +309,7 @@ class MailboxHttpHandlers:
             return self.response_factory.json({"error": str(exc)}, status_code=400)
 
     def build_digest(self, req: HttpRequest) -> HttpResponse:
+        """Handle an HTTP request to build a digest from email summaries and return it as Markdown."""
         try:
             data = req.get_json()
             digest = self.digest_builder.build(data.get("summaries", []), data.get("audience", "robert"))
@@ -305,6 +319,7 @@ class MailboxHttpHandlers:
             return self.response_factory.json({"error": str(exc)}, status_code=400)
 
     def send_digest(self, req: HttpRequest) -> HttpResponse:
+        """Handle an HTTP request to send a digest email and return the sender address as JSON."""
         try:
             data = req.get_json()
             to_address = data.get("to")

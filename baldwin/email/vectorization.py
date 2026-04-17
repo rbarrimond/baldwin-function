@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from email.utils import parsedate_to_datetime
 
 from baldwin.embedding import HashingEmbeddingProvider
@@ -42,7 +42,7 @@ class NormalizedEmail:
     recipients: list[str]
     raw_date: str
     sent_at: str | None
-    folder: str | None
+    folders: list[str]
     body: str
     searchable_text: str
     content_checksum: str
@@ -107,12 +107,38 @@ class EmailNormalizer:
             recipients=self._build_recipients(email_message),
             raw_date=email_message.date,
             sent_at=_parse_date(email_message.date),
-            folder=_normalize_whitespace(email_message.folder or "") or None,
+            folders=[_normalize_whitespace(email_message.folder)] if _normalize_whitespace(email_message.folder or "") else [],
             body=body,
             searchable_text=searchable_text,
             content_checksum=checksum,
             headers=email_message.headers,
         )
+
+    @staticmethod
+    def merge_duplicates(normalized_emails: list[NormalizedEmail]) -> list[NormalizedEmail]:
+        """Collapse duplicate normalized emails while preserving folder provenance."""
+        merged: dict[str, NormalizedEmail] = {}
+        ordered_fingerprints: list[str] = []
+
+        for normalized_email in normalized_emails:
+            existing = merged.get(normalized_email.fingerprint)
+            if existing is None:
+                merged[normalized_email.fingerprint] = normalized_email
+                ordered_fingerprints.append(normalized_email.fingerprint)
+                continue
+
+            if existing.content_checksum != normalized_email.content_checksum:
+                raise ValueError(
+                    "Conflicting normalized emails share the same fingerprint but different content checksums."
+                )
+
+            folders = existing.folders.copy()
+            for folder in normalized_email.folders:
+                if folder not in folders:
+                    folders.append(folder)
+            merged[normalized_email.fingerprint] = replace(existing, folders=folders)
+
+        return [merged[fingerprint] for fingerprint in ordered_fingerprints]
 
 
 class HashingVectorizer:

@@ -23,7 +23,8 @@ baldwin-function/
 │       ├── __init__.py     # Package exports for email helpers
 │       └── email_service.py # IMAP parsing and mailbox access helpers
 ├── scripts/
-│   └── vectorize_inbox.py  # Manual inbox vectorization pipeline for PostgreSQL
+│   ├── vectorize_mailbox.py # Manual mailbox vectorization pipeline for PostgreSQL
+│   └── vectorize_inbox.py   # Compatibility shim for the legacy mailbox vectorization entrypoint
 ├── function_app.py         # Core function definitions using @app decorators
 ├── requirements.txt        # Python dependencies
 ├── host.json               # Azure Functions host config
@@ -52,7 +53,7 @@ These should be set via `app_settings` in Terraform or `local.settings.json` for
 - `IMAP_HOST` (optional, defaults to `imap.mail.me.com`)
 - `IMAP_PORT` (optional, defaults to `993`)
 - `IMAP_FOLDERS` (optional, comma-separated default IMAP folder list; defaults to `INBOX`)
-- `DATABASE_URL` (required for inbox vectorization)
+- `DATABASE_URL` (required for mailbox vectorization)
 - `SMTP_SERVER`
 - `SMTP_PORT`
 - `SMTP_USERNAME`
@@ -95,14 +96,16 @@ curl -X POST "http://localhost:7071/api/summarize-email" \
 The repository includes a manual script that fetches IMAP emails from one or more folders, normalizes them, generates embeddings through a shared provider layer, and stores them in PostgreSQL using `pgvector`. Ollama is the default local provider, and deterministic hashing remains available as a fallback. Long emails that exceed Ollama's context window are now chunked and recombined into a single document embedding before the runtime falls back.
 
 ```bash
-python scripts/vectorize_inbox.py --days 3 --folder INBOX --folder Archive
+python scripts/vectorize_mailbox.py --days 3 --folder INBOX --folder Archive
 ```
 
 Use dry-run mode to validate mailbox-folder access and vectorization without writing to the database:
 
 ```bash
-python scripts/vectorize_inbox.py --days 1 --folder INBOX --folder Archive --dry-run
+python scripts/vectorize_mailbox.py --days 1 --folder INBOX --folder Archive --dry-run
 ```
+
+The legacy `scripts/vectorize_inbox.py` entrypoint remains as a compatibility shim.
 
 Schema and storage details live in `docs/EMAIL_VECTORIZATION.md`.
 
