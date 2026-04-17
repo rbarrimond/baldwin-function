@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 - 2026-04-17
+
+- Slimmed the Azure Function entrypoints so `function_app.py` only wires routes to dedicated HTTP handler classes.
+- Introduced cohesive request-handling classes for mailbox scanning, digest building, digest delivery, response creation, and environment-backed configuration.
+- Added HTTP contract tests for the function endpoints while preserving the existing response semantics.
+
 ## 0.4.0 - 2026-04-17
 
 - Added adaptive chunking for long Ollama embedding inputs so oversized normalized emails are split and recombined into a single stored document embedding instead of immediately falling back to hashing.
