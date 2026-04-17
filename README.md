@@ -91,7 +91,7 @@ curl -X POST "http://localhost:7071/api/summarize-email" \
 
 ## 🧮 Vectorize Inbox To PostgreSQL
 
-The repository includes a manual script that fetches IMAP emails, normalizes them, generates embeddings through a shared provider layer, and stores them in PostgreSQL using `pgvector`. Ollama is the default local provider, and deterministic hashing remains available as a fallback.
+The repository includes a manual script that fetches IMAP emails, normalizes them, generates embeddings through a shared provider layer, and stores them in PostgreSQL using `pgvector`. Ollama is the default local provider, and deterministic hashing remains available as a fallback. Long emails that exceed Ollama's context window are now chunked and recombined into a single document embedding before the runtime falls back.
 
 ```bash
 python scripts/vectorize_inbox.py --days 3

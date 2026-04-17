@@ -1,8 +1,10 @@
 """Unit tests for embedding providers and runtime wiring."""
 
+import io
 import json
 import unittest
 from unittest.mock import MagicMock, patch
+from urllib import error
 
 from baldwin.embedding import (
     EmbeddingProviderError,
@@ -107,6 +109,53 @@ class OllamaEmbeddingProviderTests(unittest.TestCase):
 
         with self.assertRaises(EmbeddingProviderError):
             provider.embed_texts(["hello"])
+
+    @patch("baldwin.embedding.providers.request.urlopen")
+    def test_ollama_provider_chunks_context_overflow_inputs(self, urlopen: MagicMock) -> None:
+        """Oversized inputs should be split and recombined before falling back."""
+
+        def fake_urlopen(http_request, timeout):  # type: ignore[no-untyped-def]
+            del timeout
+            payload = json.loads(http_request.data.decode("utf-8"))
+            text = payload["input"][0]
+            if len(text) > 40:
+                raise error.HTTPError(
+                    http_request.full_url,
+                    400,
+                    "Bad Request",
+                    hdrs=None,
+                    fp=io.BytesIO(b'{"error":"the input length exceeds the context length"}'),
+                )
+
+            response = MagicMock()
+            response.read.return_value = json.dumps(
+                {
+                    "embeddings": [[float(len(text)), 1.0]],
+                    "total_duration": 10,
+                    "load_duration": 5,
+                }
+            ).encode("utf-8")
+            context_manager = MagicMock()
+            context_manager.__enter__.return_value = response
+            context_manager.__exit__.return_value = False
+            return context_manager
+
+        urlopen.side_effect = fake_urlopen
+        provider = OllamaEmbeddingProvider(
+            base_url="http://localhost:11434",
+            model_name="qllama/bge-small-en-v1.5",
+            timeout_seconds=10,
+        )
+
+        result = provider.embed_texts(["chunk " * 20])[0]
+
+        self.assertEqual(result.provider, "ollama")
+        self.assertEqual(result.model_name, "qllama/bge-small-en-v1.5")
+        self.assertEqual(result.dimensions, 2)
+        self.assertGreater(result.metadata["chunk_count"], 1)
+        self.assertEqual(result.metadata["chunking_strategy"], "adaptive-halving")
+        self.assertAlmostEqual(sum(value * value for value in result.vector), 1.0, places=6)
+        self.assertGreater(urlopen.call_count, 1)
 
 
 class EmbeddingServiceTests(unittest.TestCase):

@@ -9,6 +9,7 @@ The persistence layer now uses a generic vector-document store with an email-spe
 - The first implementation is a manual script.
 - The default local embedding provider is Ollama over HTTP.
 - Deterministic hashing remains available as a fallback and test baseline.
+- When Ollama rejects a long input for context length, the runtime now splits the normalized email text into smaller chunks and stores a single length-weighted aggregate embedding for the document instead of immediately falling back.
 - PostgreSQL is expected to have the `pgvector` extension available.
 - Azure PostgreSQL is not provisioned in this repository yet.
 
@@ -61,6 +62,10 @@ The script accepts the following settings:
 ## Deduplication
 
 The email adapter prefers `Message-ID` when it is present. If the upstream message does not provide one, the fallback fingerprint is computed from sender, date, subject, and normalized text content. Re-running the script against the same mailbox window is expected to be idempotent within the same provider/model space, while still allowing additional embeddings to be stored for other providers or models.
+
+## Long Email Embeddings
+
+For Ollama-backed embeddings, long normalized emails are first attempted as a single input. If Ollama returns a context-length error, the runtime recursively splits the text on paragraph or whitespace boundaries, embeds the smaller chunks, and stores one normalized length-weighted aggregate vector for the original document. This keeps one embedding row per document/provider/model while reducing unnecessary fallback to hashing.
 
 ## Local Run
 

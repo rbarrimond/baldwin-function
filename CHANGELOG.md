@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0 - 2026-04-17
+
+- Added adaptive chunking for long Ollama embedding inputs so oversized normalized emails are split and recombined into a single stored document embedding instead of immediately falling back to hashing.
+- Updated the vectorization documentation and regression tests to cover the new long-email embedding behavior.
+
 ## 0.3.1 - 2026-04-17
 
 - Changed the default Ollama embedding model from `bge-large` to `qllama/bge-small-en-v1.5` after verifying the namespaced model exists in the Ollama registry, installs locally, and serves embeddings successfully.

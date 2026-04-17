@@ -19,6 +19,7 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_HASH_DIMENSIONS = 256
 DEFAULT_HASH_MODEL = "hashing-v1"
 DEFAULT_FALLBACK_PROVIDER = "hashing"
+TEXT_REQUIRED_ERROR = "Text is required for embedding."
 
 
 class EmbeddingProviderError(RuntimeError):
@@ -71,6 +72,13 @@ def _normalize_whitespace(value: str) -> str:
 
 def _tokenize(value: str) -> list[str]:
     return re.findall(r"[A-Za-z0-9']+", value.lower())
+
+
+def _normalize_vector(vector: list[float]) -> list[float]:
+    magnitude = math.sqrt(sum(value * value for value in vector))
+    if magnitude == 0:
+        return vector
+    return [value / magnitude for value in vector]
 
 
 def _coerce_bool(value: str | None, default: bool) -> bool:
@@ -165,7 +173,7 @@ class HashingEmbeddingProvider:
         for text in texts:
             normalized_text = _normalize_whitespace(text)
             if not normalized_text:
-                raise ValueError("Text is required for embedding.")
+                raise ValueError(TEXT_REQUIRED_ERROR)
 
             vector = [0.0] * self.dimensions
             for token in _tokenize(normalized_text):
@@ -174,9 +182,7 @@ class HashingEmbeddingProvider:
                 sign = 1.0 if digest[4] % 2 == 0 else -1.0
                 vector[bucket] += sign
 
-            magnitude = math.sqrt(sum(value * value for value in vector))
-            if magnitude != 0:
-                vector = [value / magnitude for value in vector]
+            vector = _normalize_vector(vector)
 
             results.append(
                 EmbeddingResult(
@@ -220,7 +226,28 @@ class OllamaEmbeddingProvider:
 
         normalized_inputs = [_normalize_whitespace(text) for text in texts]
         if any(not text for text in normalized_inputs):
-            raise ValueError("Text is required for embedding.")
+            raise ValueError(TEXT_REQUIRED_ERROR)
+
+        return [self._embed_single_text(text) for text in normalized_inputs]
+
+    def _embed_single_text(self, text: str) -> EmbeddingResult:
+        try:
+            return self._request_embeddings([text])[0]
+        except EmbeddingProviderError as exc:
+            if not self._is_context_length_error(exc):
+                raise
+
+            chunks = self._split_text(text)
+            if len(chunks) <= 1:
+                raise
+
+            chunk_embeddings = [self._embed_single_text(chunk) for chunk in chunks]
+            return self._combine_chunk_embeddings(text, chunks, chunk_embeddings)
+
+    def _request_embeddings(self, texts: list[str]) -> list[EmbeddingResult]:
+        normalized_inputs = [_normalize_whitespace(text) for text in texts]
+        if any(not text for text in normalized_inputs):
+            raise ValueError(TEXT_REQUIRED_ERROR)
 
         payload = json.dumps({"model": self.model_name, "input": normalized_inputs}).encode("utf-8")
         endpoint = f"{self.base_url}/api/embed"
@@ -258,7 +285,7 @@ class OllamaEmbeddingProvider:
             raise EmbeddingProviderError("Ollama returned an unexpected number of embeddings.")
 
         results: list[EmbeddingResult] = []
-        for raw_embedding in raw_embeddings:
+        for index, raw_embedding in enumerate(raw_embeddings):
             if not isinstance(raw_embedding, list) or not raw_embedding:
                 raise EmbeddingProviderError("Ollama returned an invalid embedding vector.")
             vector = [float(value) for value in raw_embedding]
@@ -270,6 +297,7 @@ class OllamaEmbeddingProvider:
                     provider=self.provider_name,
                     metadata={
                         "base_url": self.base_url,
+                        "input_text_length": len(normalized_inputs[index]),
                         "total_duration": response_payload.get("total_duration"),
                         "load_duration": response_payload.get("load_duration"),
                     },
@@ -277,6 +305,71 @@ class OllamaEmbeddingProvider:
             )
 
         return results
+
+    @staticmethod
+    def _is_context_length_error(exc: EmbeddingProviderError) -> bool:
+        return "context length" in str(exc).lower()
+
+    @staticmethod
+    def _split_text(text: str) -> list[str]:
+        midpoint = len(text) // 2
+        split_index = OllamaEmbeddingProvider._find_split_index(text, midpoint)
+        if split_index <= 0 or split_index >= len(text):
+            return [text]
+
+        left = _normalize_whitespace(text[:split_index])
+        right = _normalize_whitespace(text[split_index:])
+        chunks = [chunk for chunk in (left, right) if chunk]
+        return chunks or [text]
+
+    @staticmethod
+    def _find_split_index(text: str, midpoint: int) -> int:
+        paragraph_break = text.rfind("\n\n", 0, midpoint)
+        if paragraph_break >= 0:
+            return paragraph_break + 2
+
+        whitespace_before = text.rfind(" ", 0, midpoint)
+        if whitespace_before >= 0:
+            return whitespace_before + 1
+
+        whitespace_after = text.find(" ", midpoint)
+        if whitespace_after >= 0:
+            return whitespace_after + 1
+
+        return midpoint
+
+    def _combine_chunk_embeddings(
+        self,
+        source_text: str,
+        chunks: list[str],
+        chunk_embeddings: list[EmbeddingResult],
+    ) -> EmbeddingResult:
+        dimensions = chunk_embeddings[0].dimensions
+        if any(result.dimensions != dimensions for result in chunk_embeddings):
+            raise EmbeddingProviderError("Ollama returned inconsistent chunk embedding dimensions.")
+
+        weighted_vector = [0.0] * dimensions
+        total_weight = 0.0
+        for chunk, result in zip(chunks, chunk_embeddings, strict=True):
+            weight = float(max(len(chunk), 1))
+            total_weight += weight
+            for index, value in enumerate(result.vector):
+                weighted_vector[index] += value * weight
+
+        combined_vector = _normalize_vector([value / total_weight for value in weighted_vector])
+        return EmbeddingResult(
+            vector=combined_vector,
+            model_name=self.model_name,
+            dimensions=dimensions,
+            provider=self.provider_name,
+            metadata={
+                "base_url": self.base_url,
+                "input_text_length": len(source_text),
+                "chunk_count": len(chunks),
+                "chunk_lengths": [len(chunk) for chunk in chunks],
+                "chunking_strategy": "adaptive-halving",
+            },
+        )
 
 
 def build_embedding_provider(settings: EmbeddingSettings) -> EmbeddingProvider:
