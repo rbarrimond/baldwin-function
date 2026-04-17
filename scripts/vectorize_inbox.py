@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import imaplib
 import os
 import sys
 from dataclasses import dataclass
@@ -11,12 +13,26 @@ from pathlib import Path
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from baldwin.email import (
-    EmailNormalizer,
-    EmailService,
-    HashingVectorizer,
-    PostgresEmailVectorStore,
-)
+# pylint: disable=wrong-import-position
+from baldwin.email import (EmailNormalizer, EmailService, HashingVectorizer,
+                           PostgresEmailVectorStore)
+
+
+def _load_local_settings() -> None:
+    settings_path = Path(__file__).resolve().parents[1] / "local.settings.json"
+    if not settings_path.exists():
+        return
+
+    with settings_path.open("r", encoding="utf-8") as settings_file:
+        settings_data = json.load(settings_file)
+
+    values = settings_data.get("Values")
+    if not isinstance(values, dict):
+        return
+
+    for name, value in values.items():
+        if isinstance(value, str) and name not in os.environ:
+            os.environ[name] = value
 
 
 def _get_setting(*names: str, default: str | None = None) -> str | None:
@@ -40,6 +56,8 @@ class ScriptSettings:
 
     imap_user: str
     imap_password: str
+    imap_host: str
+    imap_port: int
     database_url: str
     dimensions: int
     model_name: str
@@ -71,6 +89,8 @@ def _load_settings(args: argparse.Namespace) -> ScriptSettings:
     return ScriptSettings(
         imap_user=_get_required_setting("IMAP_USER", "MAIL_USERNAME"),
         imap_password=_get_required_setting("IMAP_PASSWORD", "MAIL_APP_PASSWORD"),
+        imap_host=_get_setting("IMAP_HOST", default="imap.mail.me.com") or "imap.mail.me.com",
+        imap_port=int(_get_setting("IMAP_PORT", default="993") or "993"),
         database_url=_get_required_setting("DATABASE_URL"),
         dimensions=args.dimensions,
         model_name=args.model_name,
@@ -79,12 +99,18 @@ def _load_settings(args: argparse.Namespace) -> ScriptSettings:
 
 def main() -> int:
     """Run the inbox fetch, vectorization, and persistence workflow."""
+    _load_local_settings()
     args = _parse_args()
     if args.days < 1 or args.days > 365:
         raise ValueError("--days must be between 1 and 365.")
 
     settings = _load_settings(args)
-    email_service = EmailService(settings.imap_user, settings.imap_password)
+    email_service = EmailService(
+        settings.imap_user,
+        settings.imap_password,
+        imap_host=settings.imap_host,
+        imap_port=settings.imap_port,
+    )
     normalizer = EmailNormalizer()
     vectorizer = HashingVectorizer(dimensions=settings.dimensions, model_name=settings.model_name)
     store = PostgresEmailVectorStore(
@@ -128,4 +154,19 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except ValueError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    except imaplib.IMAP4.error as exc:
+        print(
+            "IMAP authentication failed. Check IMAP_USER or MAIL_USERNAME and "
+            "IMAP_PASSWORD or MAIL_APP_PASSWORD in local.settings.json or your environment.",
+            file=sys.stderr,
+        )
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1) from exc
+    except (OSError, RuntimeError) as exc:
+        print(f"Runtime error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc

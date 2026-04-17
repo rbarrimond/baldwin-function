@@ -53,6 +53,13 @@ def _get_required_setting(name: str) -> str:
     return value
 
 
+def _get_int_setting(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if not raw_value:
+        return default
+    return int(raw_value)
+
+
 def _parse_days(req: HttpRequest) -> int:
     raw_days = req.params.get("days", "1")
     days = int(raw_days)
@@ -168,8 +175,10 @@ def scan_mail(req: HttpRequest) -> HttpResponse:
         days = _parse_days(req)
         imap_user = _get_required_setting("IMAP_USER")
         imap_pass = _get_required_setting("IMAP_PASSWORD")
+        imap_host = os.getenv("IMAP_HOST", "imap.mail.me.com")
+        imap_port = _get_int_setting("IMAP_PORT", 993)
 
-        email_service = EmailService(imap_user, imap_pass)
+        email_service = EmailService(imap_user, imap_pass, imap_host=imap_host, imap_port=imap_port)
         emails = email_service.fetch_emails(days)
         email_payloads = [_email_to_dict(email_message) for email_message in emails]
         _persist_emails(email_payloads)

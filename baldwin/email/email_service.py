@@ -37,16 +37,25 @@ class EmailService:
     A service for interacting with an IMAP email server to fetch emails.
     """
 
-    def __init__(self, imap_user: str, imap_pass: str):
+    def __init__(
+        self,
+        imap_user: str,
+        imap_pass: str,
+        imap_host: str = "imap.mail.me.com",
+        imap_port: int = 993,
+    ):
         """
         Initializes the EmailService with user credentials.
 
         Args:
             imap_user (str): The IMAP username.
             imap_pass (str): The IMAP password.
+            imap_host (str): The IMAP hostname.
+            imap_port (int): The IMAP port.
         """
 
-        self.imap_host = "imap.mail.me.com"
+        self.imap_host = imap_host
+        self.imap_port = imap_port
         self.imap_user = imap_user
         self.imap_pass = imap_pass
 
@@ -145,7 +154,7 @@ class EmailService:
         if days < 1:
             raise ValueError("days must be greater than 0")
 
-        mail = imaplib.IMAP4_SSL(self.imap_host)
+        mail = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
         try:
             mail.login(self.imap_user, self.imap_pass)
             status, _ = mail.select("inbox")

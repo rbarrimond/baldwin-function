@@ -49,6 +49,8 @@ These should be set via `app_settings` in Terraform or `local.settings.json` for
 
 - `IMAP_USER`
 - `IMAP_PASSWORD`
+- `IMAP_HOST` (optional, defaults to `imap.mail.me.com`)
+- `IMAP_PORT` (optional, defaults to `993`)
 - `DATABASE_URL` (required for inbox vectorization)
 - `SMTP_SERVER`
 - `SMTP_PORT`

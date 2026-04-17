@@ -18,6 +18,8 @@ The script accepts the following settings:
 - `DATABASE_URL`: PostgreSQL connection string.
 - `IMAP_USER` or `MAIL_USERNAME`: IMAP username.
 - `IMAP_PASSWORD` or `MAIL_APP_PASSWORD`: IMAP password.
+- `IMAP_HOST` (optional): IMAP hostname, default `imap.mail.me.com`.
+- `IMAP_PORT` (optional): IMAP port, default `993`.
 - `EMAIL_VECTOR_DIMENSIONS` (optional): vector dimension count, default `256`.
 - `EMAIL_VECTOR_MODEL` (optional): stored model identifier, default `hashing-v1`.
 
