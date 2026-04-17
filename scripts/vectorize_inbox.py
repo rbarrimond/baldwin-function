@@ -144,7 +144,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-name",
-        default=_get_setting("EMBEDDING_MODEL", "EMAIL_VECTOR_MODEL", default="bge-small-en-v1.5"),
+        default=_get_setting("EMBEDDING_MODEL", "EMAIL_VECTOR_MODEL", default="qllama/bge-small-en-v1.5"),
         help="Identifier stored with the generated vectors.",
     )
     parser.add_argument(

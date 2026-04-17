@@ -60,7 +60,7 @@ These should be set via `app_settings` in Terraform or `local.settings.json` for
 - `EMAILS_CONTAINER` (optional, defaults to `emails`)
 - `EMBEDDING_PROVIDER` (optional, defaults to `ollama`)
 - `EMBEDDING_BASE_URL` (optional, defaults to `http://127.0.0.1:11434`)
-- `EMBEDDING_MODEL` (optional, defaults to `bge-small-en-v1.5`)
+- `EMBEDDING_MODEL` (optional, defaults to `qllama/bge-small-en-v1.5`)
 - `EMBEDDING_TIMEOUT_SECONDS` (optional, defaults to `30`)
 - `EMBEDDING_ENABLE_FALLBACK` (optional, defaults to `true`)
 - `EMBEDDING_FALLBACK_PROVIDER` (optional, defaults to `hashing`)

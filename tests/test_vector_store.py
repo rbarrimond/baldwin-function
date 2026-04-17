@@ -59,7 +59,7 @@ class PostgresVectorStoreTests(unittest.TestCase):
             EmbeddingResult(
                 vector=[0.1, 0.2, 0.3],
                 provider="ollama",
-                model_name="bge-small-en-v1.5",
+                model_name="qllama/bge-small-en-v1.5",
                 dimensions=3,
                 metadata={},
             ),
@@ -73,7 +73,7 @@ class PostgresVectorStoreTests(unittest.TestCase):
         self.assertIn("ON CONFLICT (document_id, provider, model_name)", embedding_sql)
         self.assertIn("dimensions IS DISTINCT FROM EXCLUDED.dimensions", embedding_sql)
         self.assertEqual(embedding_params["provider"], "ollama")
-        self.assertEqual(embedding_params["model_name"], "bge-small-en-v1.5")
+        self.assertEqual(embedding_params["model_name"], "qllama/bge-small-en-v1.5")
 
 
 if __name__ == "__main__":

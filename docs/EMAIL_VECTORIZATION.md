@@ -23,7 +23,7 @@ The script accepts the following settings:
 - `IMAP_PORT` (optional): IMAP port, default `993`.
 - `EMBEDDING_PROVIDER` (optional): provider identifier, default `ollama`.
 - `EMBEDDING_BASE_URL` (optional): provider base URL, default `http://127.0.0.1:11434`.
-- `EMBEDDING_MODEL` (optional): model identifier, default `bge-small-en-v1.5`.
+- `EMBEDDING_MODEL` (optional): model identifier, default `qllama/bge-small-en-v1.5`.
 - `EMBEDDING_TIMEOUT_SECONDS` (optional): HTTP timeout, default `30`.
 - `EMBEDDING_ENABLE_FALLBACK` (optional): whether fallback is enabled, default `true`.
 - `EMBEDDING_FALLBACK_PROVIDER` (optional): fallback provider identifier, default `hashing`.

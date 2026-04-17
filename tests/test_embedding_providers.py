@@ -21,7 +21,7 @@ class EmbeddingSettingsTests(unittest.TestCase):
         "os.environ",
         {
             "EMBEDDING_PROVIDER": "ollama",
-            "EMBEDDING_MODEL": "bge-small-en-v1.5",
+            "EMBEDDING_MODEL": "qllama/bge-small-en-v1.5",
             "EMBEDDING_BASE_URL": "http://localhost:11434",
             "EMBEDDING_TIMEOUT_SECONDS": "12",
             "EMBEDDING_HASH_DIMENSIONS": "384",
@@ -34,7 +34,7 @@ class EmbeddingSettingsTests(unittest.TestCase):
         settings = load_embedding_settings()
 
         self.assertEqual(settings.provider_name, "ollama")
-        self.assertEqual(settings.model_name, "bge-small-en-v1.5")
+        self.assertEqual(settings.model_name, "qllama/bge-small-en-v1.5")
         self.assertEqual(settings.base_url, "http://localhost:11434")
         self.assertEqual(settings.timeout_seconds, 12.0)
         self.assertEqual(settings.hashing_dimensions, 384)
@@ -43,7 +43,7 @@ class EmbeddingSettingsTests(unittest.TestCase):
     def test_build_embedding_provider_resolves_ollama_and_hashing(self) -> None:
         """The provider factory should resolve the supported provider identifiers."""
         ollama_provider = build_embedding_provider(
-            load_embedding_settings({"provider_name": "ollama", "model_name": "bge-small-en-v1.5"})
+            load_embedding_settings({"provider_name": "ollama", "model_name": "qllama/bge-small-en-v1.5"})
         )
         hashing_provider = build_embedding_provider(
             load_embedding_settings({"provider_name": "hashing", "model_name": "hashing-v1"})
@@ -88,13 +88,13 @@ class OllamaEmbeddingProviderTests(unittest.TestCase):
 
         provider = OllamaEmbeddingProvider(
             base_url="http://localhost:11434",
-            model_name="bge-small-en-v1.5",
+            model_name="qllama/bge-small-en-v1.5",
             timeout_seconds=10,
         )
         result = provider.embed_texts(["hello world"])[0]
 
         self.assertEqual(result.provider, "ollama")
-        self.assertEqual(result.model_name, "bge-small-en-v1.5")
+        self.assertEqual(result.model_name, "qllama/bge-small-en-v1.5")
         self.assertEqual(result.dimensions, 3)
         self.assertEqual(result.vector, [0.1, 0.2, 0.3])
         self.assertEqual(result.metadata["base_url"], "http://localhost:11434")
