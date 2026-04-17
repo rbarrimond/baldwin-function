@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import smtplib
+from dataclasses import dataclass
 from email.message import EmailMessage
 from typing import Any, Mapping
 
@@ -15,7 +16,7 @@ from azure.core.exceptions import AzureError, ResourceExistsError
 from azure.functions import HttpRequest, HttpResponse
 from azure.storage.blob import BlobServiceClient
 
-from baldwin.email import EmailDeliveryError, EmailFetchError, EmailService
+from baldwin.email import DEFAULT_IMAP_FOLDER, EmailDeliveryError, EmailFetchError, EmailService, MailboxFolders
 
 JSON_MIMETYPE = "application/json"
 MARKDOWN_MIMETYPE = "text/markdown"
@@ -46,6 +47,40 @@ class EnvironmentSettings:
         return int(raw_value)
 
 
+@dataclass(frozen=True)
+class MailScanRequest:
+    """Parsed request parameters for an IMAP folder scan."""
+
+    days: int
+    folders: MailboxFolders
+
+
+class MailboxRequestParser:
+    """Parse HTTP request inputs for mailbox operations."""
+
+    def __init__(self, settings: EnvironmentSettings):
+        self.settings = settings
+
+    @staticmethod
+    def _parse_days(req: HttpRequest) -> int:
+        raw_days = req.params.get("days", "1")
+        days = int(raw_days)
+        if days < 1 or days > 30:
+            raise ValueError("The 'days' query parameter must be between 1 and 30.")
+        return days
+
+    def parse_scan_request(self, req: HttpRequest) -> MailScanRequest:
+        raw_folders = req.params.get("folders") or req.params.get("folder")
+        default_folders = self.settings.get("IMAP_FOLDERS")
+        return MailScanRequest(
+            days=self._parse_days(req),
+            folders=MailboxFolders.from_values(
+                [raw_folders] if raw_folders is not None else None,
+                default_values=[default_folders] if default_folders else None,
+            ),
+        )
+
+
 class ResponseFactory:
     """Create HTTP responses for the function handlers."""
 
@@ -70,9 +105,10 @@ class EmailArchiveStore:
 
     @staticmethod
     def _build_blob_name(email_payload: dict[str, Any]) -> str:
+        folder = re.sub(r"[^A-Za-z0-9._/-]+", "_", email_payload.get("folder") or DEFAULT_IMAP_FOLDER)
         subject = re.sub(r"[^A-Za-z0-9._-]+", "_", email_payload.get("subject") or "email")
         timestamp = re.sub(r"[^A-Za-z0-9._-]+", "_", email_payload.get("date") or "unknown-date")
-        return f"{timestamp}_{subject.strip('_') or 'email'}.json"
+        return f"{folder}/{timestamp}_{subject.strip('_') or 'email'}.json"
 
     def persist(self, email_payloads: list[dict[str, Any]]) -> None:
         connection_string = self.settings.get("AzureWebJobsStorage")
@@ -107,14 +143,17 @@ class MailboxScanService:
             return email_message.model_dump()
         return email_message.dict()
 
-    def fetch_recent_emails(self, days: int) -> list[dict[str, Any]]:
+    def fetch_recent_emails(self, days: int, folders: MailboxFolders) -> list[dict[str, Any]]:
         email_service = EmailService(
             self.settings.get_required("IMAP_USER"),
             self.settings.get_required("IMAP_PASSWORD"),
             imap_host=self.settings.get("IMAP_HOST", "imap.mail.me.com") or "imap.mail.me.com",
             imap_port=self.settings.get_int("IMAP_PORT", 993),
         )
-        email_payloads = [self._email_to_dict(email_message) for email_message in email_service.fetch_emails(days)]
+        email_payloads = [
+            self._email_to_dict(email_message)
+            for email_message in email_service.fetch_emails(days, folders)
+        ]
         self.archive_store.persist(email_payloads)
         return email_payloads
 
@@ -201,19 +240,21 @@ class DigestDeliveryService:
         return from_address
 
 
-class InboxHttpHandlers:
-    """Translate HTTP requests into Baldwin application operations."""
+class MailboxHttpHandlers:
+    """Translate HTTP requests into Baldwin mailbox operations."""
 
     def __init__(
         self,
         *,
         mailbox_scan_service: MailboxScanService,
+        request_parser: MailboxRequestParser,
         summary_service: SummaryService,
         digest_builder: DigestBuilder,
         digest_delivery_service: DigestDeliveryService,
         response_factory: ResponseFactory,
     ):
         self.mailbox_scan_service = mailbox_scan_service
+        self.request_parser = request_parser
         self.summary_service = summary_service
         self.digest_builder = digest_builder
         self.digest_delivery_service = digest_delivery_service
@@ -223,17 +264,13 @@ class InboxHttpHandlers:
     def _is_caused_by(exc: BaseException, expected_type: type[BaseException]) -> bool:
         return isinstance(exc.__cause__, expected_type)
 
-    @staticmethod
-    def _parse_days(req: HttpRequest) -> int:
-        raw_days = req.params.get("days", "1")
-        days = int(raw_days)
-        if days < 1 or days > 30:
-            raise ValueError("The 'days' query parameter must be between 1 and 30.")
-        return days
-
     def scan_mail(self, req: HttpRequest) -> HttpResponse:
         try:
-            email_payloads = self.mailbox_scan_service.fetch_recent_emails(self._parse_days(req))
+            scan_request = self.request_parser.parse_scan_request(req)
+            email_payloads = self.mailbox_scan_service.fetch_recent_emails(
+                scan_request.days,
+                scan_request.folders,
+            )
             return self.response_factory.json(email_payloads)
         except ValueError as exc:
             logging.warning("Invalid request for scan_mail: %s", exc)
@@ -241,7 +278,7 @@ class InboxHttpHandlers:
         except EmailFetchError as exc:
             if self._is_caused_by(exc, imaplib.IMAP4.error):
                 logging.warning("IMAP request failed for scan_mail: %s", exc)
-                return self.response_factory.json({"error": "Unable to read from the IMAP inbox."}, status_code=502)
+                return self.response_factory.json({"error": "Unable to read from the requested IMAP folders."}, status_code=502)
 
             logging.exception("Unexpected email fetch error in scan_mail")
             return self.response_factory.json({"error": INTERNAL_SERVER_ERROR_MESSAGE}, status_code=500)
@@ -290,11 +327,12 @@ class InboxHttpHandlers:
             return self.response_factory.json({"error": INTERNAL_SERVER_ERROR_MESSAGE}, status_code=500)
 
 
-def build_http_handlers() -> InboxHttpHandlers:
+def build_http_handlers() -> MailboxHttpHandlers:
     """Create the production HTTP handler graph for Azure Functions."""
     settings = EnvironmentSettings()
-    return InboxHttpHandlers(
+    return MailboxHttpHandlers(
         mailbox_scan_service=MailboxScanService(settings, EmailArchiveStore(settings)),
+        request_parser=MailboxRequestParser(settings),
         summary_service=SummaryService(),
         digest_builder=DigestBuilder(),
         digest_delivery_service=DigestDeliveryService(settings),

@@ -1,4 +1,4 @@
-"""Fetch inbox messages, vectorize them, and store them in PostgreSQL."""
+"""Fetch IMAP folder messages, vectorize them, and store them in PostgreSQL."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # pylint: disable=wrong-import-position
-from baldwin.email import EmailFetchError, EmailNormalizer, EmailService, PostgresEmailVectorStore
+from baldwin.email import EmailFetchError, EmailNormalizer, EmailService, MailboxFolders, PostgresEmailVectorStore
 from baldwin.embedding import EmbeddingProviderError, build_embedding_service, load_embedding_settings
 from baldwin.vector import VectorStoreError
 
@@ -34,6 +34,17 @@ def _display_label(value: str, fallback: str = "(no subject)") -> str:
     if len(normalized) <= 80:
         return normalized
     return normalized[:77] + "..."
+
+
+def _format_folder_list(folders: MailboxFolders) -> str:
+    return ", ".join(folders.folders)
+
+
+def _build_progress_label(email_message) -> str:
+    subject_label = _display_label(email_message.subject)
+    if getattr(email_message, "folder", None):
+        return f"[{email_message.folder}] {subject_label}"
+    return subject_label
 
 
 def _format_chunking_status(metadata: dict[str, object]) -> str | None:
@@ -122,12 +133,13 @@ def _get_required_setting(*names: str) -> str:
 
 @dataclass(frozen=True)
 class ScriptSettings:
-    """Resolved runtime settings for inbox vectorization."""
+    """Resolved runtime settings for mailbox vectorization."""
 
     imap_user: str
     imap_password: str
     imap_host: str
     imap_port: int
+    imap_folders: MailboxFolders
     database_url: str
     embedding_provider: str
     embedding_model: str
@@ -149,7 +161,13 @@ class ProcessingCounters:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--days", type=int, default=1, help="Inbox lookback window in days.")
+    parser.add_argument("--days", type=int, default=1, help="IMAP folder lookback window in days.")
+    parser.add_argument(
+        "--folder",
+        action="append",
+        dest="folders",
+        help="IMAP folder to scan. Repeat or use comma-separated values for multiple folders.",
+    )
     parser.add_argument(
         "--embedding-provider",
         default=_get_setting("EMBEDDING_PROVIDER", default="ollama"),
@@ -194,11 +212,16 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _load_settings(args: argparse.Namespace) -> ScriptSettings:
+    configured_folders = _get_setting("IMAP_FOLDERS")
     return ScriptSettings(
         imap_user=_get_required_setting("IMAP_USER", "MAIL_USERNAME"),
         imap_password=_get_required_setting("IMAP_PASSWORD", "MAIL_APP_PASSWORD"),
         imap_host=_get_setting("IMAP_HOST", default="imap.mail.me.com") or "imap.mail.me.com",
         imap_port=int(_get_setting("IMAP_PORT", default="993") or "993"),
+        imap_folders=MailboxFolders.from_values(
+            args.folders,
+            default_values=[configured_folders] if configured_folders else None,
+        ),
         database_url=_get_required_setting("DATABASE_URL"),
         embedding_provider=args.embedding_provider,
         embedding_model=args.model_name,
@@ -241,8 +264,8 @@ def _process_email(
 
 
 def main() -> int:
-    """Run the inbox fetch, vectorization, and persistence workflow."""
-    _status("Starting inbox vectorization run.")
+    """Run the IMAP folder fetch, vectorization, and persistence workflow."""
+    _status("Starting mailbox vectorization run.")
     _load_local_settings()
     args = _parse_args()
     if args.days < 1 or args.days > 365:
@@ -253,7 +276,8 @@ def main() -> int:
         "Configuration resolved: "
         f"days={args.days} dry_run={args.dry_run} provider={settings.embedding_provider} "
         f"model={settings.embedding_model} fallback={settings.fallback_provider} "
-        f"imap_host={settings.imap_host}:{settings.imap_port}"
+        f"imap_host={settings.imap_host}:{settings.imap_port} "
+        f"folders={_format_folder_list(settings.imap_folders)}"
     )
     email_service = EmailService(
         settings.imap_user,
@@ -279,9 +303,9 @@ def main() -> int:
         database_url=settings.database_url,
     )
 
-    _status("Fetching emails from IMAP inbox.")
-    emails = email_service.fetch_emails(args.days)
-    _status(f"Fetched {len(emails)} email(s) from the inbox.")
+    _status(f"Fetching emails from IMAP folders: {_format_folder_list(settings.imap_folders)}.")
+    emails = email_service.fetch_emails(args.days, settings.imap_folders)
+    _status(f"Fetched {len(emails)} email(s) from the requested IMAP folders.")
     if not args.dry_run:
         _status("Bootstrapping PostgreSQL vector schema.")
         store.bootstrap()
@@ -295,7 +319,7 @@ def main() -> int:
     skipped_count = 0
 
     for index, email_message in enumerate(emails, start=1):
-        subject_label = _display_label(email_message.subject)
+        subject_label = _build_progress_label(email_message)
         try:
             inserted, updated, skipped = _process_email(
                 email_message=email_message,

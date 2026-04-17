@@ -42,6 +42,7 @@ class NormalizedEmail:
     recipients: list[str]
     raw_date: str
     sent_at: str | None
+    folder: str | None
     body: str
     searchable_text: str
     content_checksum: str
@@ -49,7 +50,7 @@ class NormalizedEmail:
 
 
 class EmailNormalizer:
-    """Converts inbox emails into a stable persistence shape."""
+    """Converts mailbox emails into a stable persistence shape."""
 
     @staticmethod
     def _build_recipients(email_message: Email) -> list[str]:
@@ -90,7 +91,7 @@ class EmailNormalizer:
         return hashlib.sha256(fallback.encode("utf-8")).hexdigest()
 
     def normalize(self, email_message: Email) -> NormalizedEmail:
-        """Normalize an inbox email into the canonical persistence shape."""
+        """Normalize a mailbox email into the canonical persistence shape."""
         subject = _normalize_whitespace(email_message.subject)
         body = _normalize_whitespace(email_message.body)
         searchable_text = self._build_searchable_text(subject, body)
@@ -106,6 +107,7 @@ class EmailNormalizer:
             recipients=self._build_recipients(email_message),
             raw_date=email_message.date,
             sent_at=_parse_date(email_message.date),
+            folder=_normalize_whitespace(email_message.folder or "") or None,
             body=body,
             searchable_text=searchable_text,
             content_checksum=checksum,

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2 - 2026-04-17
+
+- Broadened IMAP scanning from a hard-coded inbox flow to one-or-more configured or requested IMAP folders per HTTP request and CLI run.
+- Added normalized folder selection support in the IMAP service, HTTP handler layer, and vectorization CLI.
+- Persisted source-folder provenance in email metadata and updated docs/tests to reflect mailbox-folder scanning rather than inbox-only behavior.
+
 ## 0.4.1 - 2026-04-17
 
 - Slimmed the Azure Function entrypoints so `function_app.py` only wires routes to dedicated HTTP handler classes.

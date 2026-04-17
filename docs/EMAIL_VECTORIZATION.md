@@ -1,6 +1,6 @@
-# Inbox Vectorization
+# Mailbox Folder Vectorization
 
-This repository can fetch inbox messages from IMAP, normalize them into a stable persistence shape, generate embeddings through a shared provider layer, and store both metadata and vectors in PostgreSQL.
+This repository can fetch messages from one or more IMAP folders, normalize them into a stable persistence shape, generate embeddings through a shared provider layer, and store both metadata and vectors in PostgreSQL.
 
 The persistence layer now uses a generic vector-document store with an email-specific adapter layered on top. The email adapter maps normalized emails into generic vector documents before delegating to PostgreSQL storage.
 
@@ -22,6 +22,7 @@ The script accepts the following settings:
 - `IMAP_PASSWORD` or `MAIL_APP_PASSWORD`: IMAP password.
 - `IMAP_HOST` (optional): IMAP hostname, default `imap.mail.me.com`.
 - `IMAP_PORT` (optional): IMAP port, default `993`.
+- `IMAP_FOLDERS` (optional): comma-separated default IMAP folder list, default `INBOX`.
 - `EMBEDDING_PROVIDER` (optional): provider identifier, default `ollama`.
 - `EMBEDDING_BASE_URL` (optional): provider base URL, default `http://127.0.0.1:11434`.
 - `EMBEDDING_MODEL` (optional): model identifier, default `qllama/bge-small-en-v1.5`.
@@ -42,7 +43,7 @@ The script accepts the following settings:
 - `title TEXT NOT NULL`
 - `body TEXT NOT NULL`
 - `searchable_text TEXT NOT NULL`: normalized text used for vector generation.
-- `metadata JSONB NOT NULL`: email-specific fields such as sender, recipients, raw date, parsed sent timestamp, and headers.
+- `metadata JSONB NOT NULL`: email-specific fields such as sender, recipients, raw date, parsed sent timestamp, source folder, and headers.
 - `content_checksum TEXT NOT NULL`: checksum used to detect embedding refreshes.
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 - `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
@@ -61,7 +62,7 @@ The script accepts the following settings:
 
 ## Deduplication
 
-The email adapter prefers `Message-ID` when it is present. If the upstream message does not provide one, the fallback fingerprint is computed from sender, date, subject, and normalized text content. Re-running the script against the same mailbox window is expected to be idempotent within the same provider/model space, while still allowing additional embeddings to be stored for other providers or models.
+The email adapter prefers `Message-ID` when it is present. If the upstream message does not provide one, the fallback fingerprint is computed from sender, date, subject, and normalized text content. Re-running the script against the same mailbox-folder window is expected to be idempotent within the same provider-model space, while still allowing additional embeddings to be stored for other providers or models.
 
 ## Long Email Embeddings
 
@@ -70,13 +71,13 @@ For Ollama-backed embeddings, long normalized emails are first attempted as a si
 ## Local Run
 
 ```bash
-python scripts/vectorize_inbox.py --days 3
+python scripts/vectorize_inbox.py --days 3 --folder INBOX --folder Archive
 ```
 
 To validate connectivity without writes:
 
 ```bash
-python scripts/vectorize_inbox.py --days 1 --dry-run
+python scripts/vectorize_inbox.py --days 1 --folder INBOX --folder Archive --dry-run
 ```
 
 ## Azure Promotion Path

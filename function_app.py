@@ -1,9 +1,9 @@
 """
-Baldwin Inbox Assistant - Azure Function App
+Baldwin Mail Assistant - Azure Function App
 
-This module defines HTTP-triggered Azure Functions used to scan, summarize,
-digest, and email inbox messages. The functions are designed
-to be called via a Custom GPT or external automation pipeline.
+This module defines HTTP-triggered Azure Functions used to scan IMAP folders,
+summarize messages, build digests, and email completed digests. The functions
+are designed to be called via a Custom GPT or external automation pipeline.
 
 Endpoints:
 - GET  /api/scan-mail        - IMAP email fetcher
@@ -22,7 +22,7 @@ HANDLERS = build_http_handlers()
 @app.function_name(name="scan_mail")
 @app.route(route="scan-mail", methods=["GET"])
 def scan_mail(req: HttpRequest) -> HttpResponse:
-    """Fetch recent IMAP emails."""
+    """Fetch recent IMAP emails from one or more folders."""
     return HANDLERS.scan_mail(req)
 
 @app.function_name(name="summarize_email")

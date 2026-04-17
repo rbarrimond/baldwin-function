@@ -27,6 +27,7 @@ class EmailNormalizerTests(unittest.TestCase):
 
         self.assertEqual(normalized.source_message_id, "<message-123@example.com>")
         self.assertEqual(normalized.recipients, ["recipient@example.com"])
+        self.assertIsNone(normalized.folder)
         self.assertIn("Subject", normalized.searchable_text)
         self.assertIn("First line Second line", normalized.searchable_text)
 
@@ -104,6 +105,7 @@ class PostgresEmailVectorStoreTests(unittest.TestCase):
                 date="Fri, 11 Apr 2026 09:15:00 +0000",
                 body="First line\n\nSecond line",
                 headers={"Message-ID": "<message-123@example.com>", "X-Test": "1"},
+                folder="Archive",
             )
         )
 
@@ -117,6 +119,7 @@ class PostgresEmailVectorStoreTests(unittest.TestCase):
         self.assertEqual(document.searchable_text, normalized_email.searchable_text)
         self.assertEqual(document.content_checksum, normalized_email.content_checksum)
         self.assertEqual(document.metadata["sender"], "sender@example.com")
+        self.assertEqual(document.metadata["folder"], "Archive")
         self.assertEqual(
             document.metadata["recipients"],
             ["recipient@example.com", "cc@example.com", "reply@example.com"],

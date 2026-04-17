@@ -1,13 +1,13 @@
 
 # Baldwin Function App
 
-This repository contains the Azure Function App that powers the backend for Baldwin, an email assistant that reads IMAP mailboxes, creates digest content, and sends completed digests over SMTP.
+This repository contains the Azure Function App that powers the backend for Baldwin, an email assistant that reads IMAP mailbox folders, creates digest content, and sends completed digests over SMTP.
 
 ## 🧠 Functionality
 
 The following HTTP-triggered Azure Functions are implemented in `function_app.py` using the Python V2 decorator model:
 
-- `GET /api/scan-mail`: Fetch recent IMAP emails and optionally persist them to Blob Storage.
+- `GET /api/scan-mail`: Fetch recent IMAP emails from one or more folders and optionally persist them to Blob Storage.
 - `POST /api/summarize-email`: Create a concise local summary from an email body.
 - `POST /api/build-digest`: Combine multiple summaries into a Markdown digest.
 - `POST /api/send-digest`: Send a digest email over SMTP.
@@ -51,6 +51,7 @@ These should be set via `app_settings` in Terraform or `local.settings.json` for
 - `IMAP_PASSWORD`
 - `IMAP_HOST` (optional, defaults to `imap.mail.me.com`)
 - `IMAP_PORT` (optional, defaults to `993`)
+- `IMAP_FOLDERS` (optional, comma-separated default IMAP folder list; defaults to `INBOX`)
 - `DATABASE_URL` (required for inbox vectorization)
 - `SMTP_SERVER`
 - `SMTP_PORT`
@@ -82,25 +83,25 @@ func start
 Example requests:
 
 ```bash
-curl "http://localhost:7071/api/scan-mail?days=1"
+curl "http://localhost:7071/api/scan-mail?days=1&folders=INBOX,Archive"
 
 curl -X POST "http://localhost:7071/api/summarize-email" \
   -H "Content-Type: application/json" \
   -d '{"body":"Agenda for tomorrow: review the pricing update and send the revised contract."}'
 ```
 
-## 🧮 Vectorize Inbox To PostgreSQL
+## 🧮 Vectorize Mailbox Folders To PostgreSQL
 
-The repository includes a manual script that fetches IMAP emails, normalizes them, generates embeddings through a shared provider layer, and stores them in PostgreSQL using `pgvector`. Ollama is the default local provider, and deterministic hashing remains available as a fallback. Long emails that exceed Ollama's context window are now chunked and recombined into a single document embedding before the runtime falls back.
+The repository includes a manual script that fetches IMAP emails from one or more folders, normalizes them, generates embeddings through a shared provider layer, and stores them in PostgreSQL using `pgvector`. Ollama is the default local provider, and deterministic hashing remains available as a fallback. Long emails that exceed Ollama's context window are now chunked and recombined into a single document embedding before the runtime falls back.
 
 ```bash
-python scripts/vectorize_inbox.py --days 3
+python scripts/vectorize_inbox.py --days 3 --folder INBOX --folder Archive
 ```
 
-Use dry-run mode to validate mailbox access and vectorization without writing to the database:
+Use dry-run mode to validate mailbox-folder access and vectorization without writing to the database:
 
 ```bash
-python scripts/vectorize_inbox.py --days 1 --dry-run
+python scripts/vectorize_inbox.py --days 1 --folder INBOX --folder Archive --dry-run
 ```
 
 Schema and storage details live in `docs/EMAIL_VECTORIZATION.md`.

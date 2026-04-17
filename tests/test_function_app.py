@@ -9,7 +9,7 @@ from unittest.mock import patch
 import azure.functions as func
 
 import function_app
-from baldwin.email import EmailDeliveryError, EmailFetchError
+from baldwin.email import EmailDeliveryError, EmailFetchError, MailboxFolders
 
 
 def _json_request(method: str, url: str, payload: dict | None = None, params: dict | None = None) -> func.HttpRequest:
@@ -53,12 +53,12 @@ class FunctionAppEndpointTests(unittest.TestCase):
         self.assertEqual(response.mimetype, "text/markdown")
 
     def test_scan_mail_returns_502_for_imap_failures(self) -> None:
-        def raise_imap_failure(days: int) -> list[dict]:
-            del days
+        def raise_imap_failure(days: int, folders: MailboxFolders) -> list[dict]:
+            del days, folders
             try:
                 raise imaplib.IMAP4.error("invalid credentials")
             except imaplib.IMAP4.error as exc:
-                raise EmailFetchError("Failed to fetch emails from the IMAP inbox.") from exc
+                raise EmailFetchError("Failed to fetch emails from IMAP folders: INBOX, Archive.") from exc
 
         with patch.object(function_app.HANDLERS.mailbox_scan_service, "fetch_recent_emails", side_effect=raise_imap_failure):
             response = function_app.scan_mail(
@@ -66,7 +66,17 @@ class FunctionAppEndpointTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 502)
-        self.assertEqual(json.loads(response.get_body()), {"error": "Unable to read from the IMAP inbox."})
+        self.assertEqual(json.loads(response.get_body()), {"error": "Unable to read from the requested IMAP folders."})
+
+    def test_scan_mail_passes_requested_folders_to_service(self) -> None:
+        with patch.object(function_app.HANDLERS.mailbox_scan_service, "fetch_recent_emails", return_value=[]) as fetch_recent_emails:
+            response = function_app.scan_mail(
+                _json_request("GET", "http://localhost/api/scan-mail", params={"days": "1", "folders": "INBOX,Archive"})
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(fetch_recent_emails.call_args.args[0], 1)
+        self.assertEqual(fetch_recent_emails.call_args.args[1].folders, ("INBOX", "Archive"))
 
     def test_send_digest_returns_502_for_smtp_failures(self) -> None:
         def raise_smtp_failure(to_address: str, subject: str, content: str) -> str:
