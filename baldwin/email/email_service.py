@@ -9,6 +9,7 @@ It includes:
 import datetime
 import email
 import imaplib
+import ssl
 from email.header import decode_header
 from email.message import Message
 from typing import Dict, List, Optional
@@ -123,8 +124,24 @@ class EmailService:
             headers=dict(message.items()),
         )
 
-    def _fetch_email_batch(self, mail: imaplib.IMAP4_SSL, email_id: bytes) -> List[Email]:
-        _, message_data = mail.fetch(email_id.decode("ascii"), "(RFC822)")
+    @staticmethod
+    def _create_tls_context() -> ssl.SSLContext:
+        tls_context = ssl.create_default_context()
+        tls_context.check_hostname = True
+        tls_context.verify_mode = ssl.CERT_REQUIRED
+        tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        return tls_context
+
+    def _connect_mailbox(self) -> imaplib.IMAP4:
+        if self.imap_port == 993:
+            return imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+
+        mail = imaplib.IMAP4(self.imap_host, self.imap_port)
+        mail.starttls(ssl_context=self._create_tls_context())
+        return mail
+
+    def _fetch_email_batch(self, mail: imaplib.IMAP4, email_id: bytes) -> List[Email]:
+        _, message_data = mail.fetch(email_id.decode("ascii"), "(BODY.PEEK[])")
         parsed_messages: List[Email] = []
 
         for response_part in message_data:
@@ -154,10 +171,10 @@ class EmailService:
         if days < 1:
             raise ValueError("days must be greater than 0")
 
-        mail = imaplib.IMAP4_SSL(self.imap_host, self.imap_port)
+        mail = self._connect_mailbox()
         try:
             mail.login(self.imap_user, self.imap_pass)
-            status, _ = mail.select("inbox")
+            status, _ = mail.select("INBOX")
             if status != "OK":
                 raise RuntimeError("Unable to select inbox.")
 

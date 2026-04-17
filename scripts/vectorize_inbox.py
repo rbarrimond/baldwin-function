@@ -31,6 +31,34 @@ def _display_label(value: str, fallback: str = "(no subject)") -> str:
     return normalized[:77] + "..."
 
 
+def _render_progress(
+    current: int,
+    total: int,
+    label: str,
+    *,
+    inserted: int,
+    updated: int,
+    skipped: int,
+) -> None:
+    if total <= 0:
+        return
+
+    width = 24
+    filled = int(width * current / total)
+    progress_bar = "#" * filled + "-" * (width - filled)
+    message = (
+        f"\r[vectorize-inbox] Processing [{progress_bar}] {current}/{total} "
+        f"inserted={inserted} updated={updated} skipped={skipped} "
+        f"subject={label}"
+    )
+    print(message, end="", file=sys.stderr, flush=True)
+
+
+def _finish_progress(total: int) -> None:
+    if total > 0:
+        print(file=sys.stderr, flush=True)
+
+
 def _load_local_settings() -> None:
     settings_path = Path(__file__).resolve().parents[1] / "local.settings.json"
     if not settings_path.exists():
@@ -166,13 +194,19 @@ def main() -> int:
 
     for index, email_message in enumerate(emails, start=1):
         subject_label = _display_label(email_message.subject)
-        _status(f"Processing email {index}/{fetched_count}: {subject_label}")
         try:
             normalized_email = normalizer.normalize(email_message)
             vector = vectorizer.vectorize(normalized_email.searchable_text)
             if args.dry_run:
                 skipped_count += 1
-                _status(f"Dry-run: generated vector for email {index}/{fetched_count}.")
+                _render_progress(
+                    index,
+                    fetched_count,
+                    subject_label,
+                    inserted=inserted_count,
+                    updated=updated_count,
+                    skipped=skipped_count,
+                )
                 continue
 
             result = store.upsert_email(normalized_email, vector)
@@ -180,13 +214,27 @@ def main() -> int:
                 inserted_count += 1
             if result.embedding_updated:
                 updated_count += 1
-            _status(
-                f"Stored email {index}/{fetched_count}: inserted={result.inserted} "
-                f"embedding_updated={result.embedding_updated}"
+            _render_progress(
+                index,
+                fetched_count,
+                subject_label,
+                inserted=inserted_count,
+                updated=updated_count,
+                skipped=skipped_count,
             )
         except ValueError as exc:
             skipped_count += 1
+            _render_progress(
+                index,
+                fetched_count,
+                subject_label,
+                inserted=inserted_count,
+                updated=updated_count,
+                skipped=skipped_count,
+            )
             print(f"Skipping email: {exc}", file=sys.stderr)
+
+    _finish_progress(fetched_count)
 
     print(
         "Vectorization run complete: "

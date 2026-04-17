@@ -83,7 +83,7 @@ class PostgresVectorStore:
                             title TEXT NOT NULL,
                             body TEXT NOT NULL,
                             searchable_text TEXT NOT NULL,
-                            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                            metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                             content_checksum TEXT NOT NULL,
                             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -221,3 +221,4 @@ class PostgresVectorStore:
             connection.commit()
 
         return VectorStoreResult(inserted=bool(inserted), embedding_updated=embedding_updated)
+    
