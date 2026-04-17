@@ -19,6 +19,8 @@ baldwin-function/
 ├── BaldwinEmail/
 │   ├── __init__.py         # Package exports for email helpers
 │   └── email_service.py    # IMAP parsing and mailbox access helpers
+├── scripts/
+│   └── vectorize_inbox.py  # Manual inbox vectorization pipeline for PostgreSQL
 ├── function_app.py         # Core function definitions using @app decorators
 ├── requirements.txt        # Python dependencies
 ├── host.json               # Azure Functions host config
@@ -44,13 +46,18 @@ These should be set via `app_settings` in Terraform or `local.settings.json` for
 
 - `IMAP_USER`
 - `IMAP_PASSWORD`
+- `DATABASE_URL` (required for inbox vectorization)
 - `SMTP_SERVER`
 - `SMTP_PORT`
 - `SMTP_USERNAME`
 - `SMTP_PASSWORD`
 - `SMTP_FROM` (optional, defaults to `SMTP_USERNAME`)
 - `EMAILS_CONTAINER` (optional, defaults to `emails`)
+- `EMAIL_VECTOR_DIMENSIONS` (optional, defaults to `256`)
+- `EMAIL_VECTOR_MODEL` (optional, defaults to `hashing-v1`)
 - `AzureWebJobsStorage` (optional for local-only scanning, required for blob persistence)
+
+For the vectorization script, `MAIL_USERNAME` and `MAIL_APP_PASSWORD` are also accepted as compatibility aliases for the IMAP credentials.
 
 ## 🧪 Testing Locally
 
@@ -69,6 +76,22 @@ curl -X POST "http://localhost:7071/api/summarize-email" \
   -H "Content-Type: application/json" \
   -d '{"body":"Agenda for tomorrow: review the pricing update and send the revised contract."}'
 ```
+
+## 🧮 Vectorize Inbox To PostgreSQL
+
+The repository includes a manual script that fetches IMAP emails, normalizes them, generates deterministic local vectors, and stores them in PostgreSQL using `pgvector`.
+
+```bash
+python scripts/vectorize_inbox.py --days 3
+```
+
+Use dry-run mode to validate mailbox access and vectorization without writing to the database:
+
+```bash
+python scripts/vectorize_inbox.py --days 1 --dry-run
+```
+
+Schema and storage details live in `docs/EMAIL_VECTORIZATION.md`.
 
 ## 📬 Future Features
 

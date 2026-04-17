@@ -103,11 +103,13 @@ class EmailService:
 
     def _parse_message(self, message: Message) -> Email:
         return Email(
+            id=self._decode_header_value(message.get("Message-ID")),
             subject=self._decode_header_value(message.get("Subject")),
             sender=self._decode_header_value(message.get("From", "")),
             to=self._split_recipients(message.get("To")),
             cc=self._split_recipients(message.get("Cc")),
             bcc=self._split_recipients(message.get("Bcc")),
+            reply_to=self._split_recipients(message.get("Reply-To")),
             date=message.get("Date", ""),
             body=self._extract_body(message),
             headers=dict(message.items()),
