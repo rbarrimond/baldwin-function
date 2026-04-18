@@ -94,6 +94,7 @@ class EmailNormalizer:
         """Normalize a mailbox email into the canonical persistence shape."""
         subject = _normalize_whitespace(email_message.subject)
         body = _normalize_whitespace(email_message.body)
+        normalized_folder = _normalize_whitespace(email_message.folder or "")
         searchable_text = self._build_searchable_text(subject, body)
         if not searchable_text:
             raise ValueError("Email body or subject is required for vectorization.")
@@ -107,7 +108,7 @@ class EmailNormalizer:
             recipients=self._build_recipients(email_message),
             raw_date=email_message.date,
             sent_at=_parse_date(email_message.date),
-            folders=[_normalize_whitespace(email_message.folder)] if _normalize_whitespace(email_message.folder or "") else [],
+            folders=[normalized_folder] if normalized_folder else [],
             body=body,
             searchable_text=searchable_text,
             content_checksum=checksum,
