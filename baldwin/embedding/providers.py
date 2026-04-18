@@ -66,6 +66,7 @@ class EmbeddingProvider(Protocol):
 
     def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
         """Return an embedding result for each input text."""
+        raise NotImplementedError
 
 
 def _normalize_whitespace(value: str) -> str:
