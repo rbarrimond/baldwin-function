@@ -23,6 +23,7 @@ class VectorizeInboxLoggingTests(unittest.TestCase):
         self.assertEqual(status, "chunked=3 max_chunk_length=120")
 
     def test_build_progress_label_prefixes_folder_when_present(self) -> None:
+        """Progress labels should include folder provenance when available."""
         label = _build_progress_label(
             type("NormalizedEmail", (), {"subject": "Subject", "folders": ["Archive", "Receipts"]})()
         )
@@ -44,6 +45,7 @@ class VectorizeInboxSettingsTests(unittest.TestCase):
         clear=True,
     )
     def test_load_settings_prefers_cli_folder_selection(self) -> None:
+        """CLI folder selection should override environment variable configuration."""
         args = argparse.Namespace(
             days=1,
             folders=["Receipts", "Archive"],
@@ -61,6 +63,7 @@ class VectorizeInboxSettingsTests(unittest.TestCase):
         self.assertEqual(settings.imap_folders.folders, ("Receipts", "Archive"))
 
     def test_normalize_emails_collapses_duplicate_folders(self) -> None:
+        """Emails with the same Message-ID but different folders should be normalized into a single record with combined folder provenance."""
         emails = [
             Email(
                 id="<message-123@example.com>",

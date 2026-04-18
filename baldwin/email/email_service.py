@@ -29,6 +29,7 @@ class MailboxFolders:
         *,
         default_values: Sequence[str] | None = None,
     ) -> "MailboxFolders":
+        """Create a MailboxFolders instance from raw input values, applying normalization and defaults."""
         folders = cls._normalize(values)
         if not folders:
             folders = cls._normalize(default_values)
@@ -263,4 +264,3 @@ class EmailService:
                 except (imaplib.IMAP4.error, OSError) as exc:
                     if pending_error is None:
                         raise EmailFetchError("Failed to close the IMAP mailbox session.") from exc
-            

@@ -145,6 +145,7 @@ class MailboxFoldersTests(unittest.TestCase):
     """Tests for normalized IMAP folder selection."""
 
     def test_from_values_supports_commas_and_deduplicates_preserving_order(self) -> None:
+        """The from_values factory should parse comma-separated folder names, deduplicate them, and preserve order."""
         folders = MailboxFolders.from_values(["INBOX, Archive", "Receipts", "Archive"])
 
         self.assertEqual(folders.folders, ("INBOX", "Archive", "Receipts"))
@@ -152,4 +153,3 @@ class MailboxFoldersTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-    
