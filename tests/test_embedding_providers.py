@@ -3,17 +3,20 @@
 import io
 import json
 import unittest
+from email.message import Message
 from unittest.mock import MagicMock, patch
 from urllib import error
 
 from baldwin.embedding import (
     EmbeddingProviderError,
+    EmbeddingResult,
     HashingEmbeddingProvider,
     OllamaEmbeddingProvider,
     build_embedding_provider,
     build_embedding_service,
     load_embedding_settings,
 )
+from baldwin.exceptions import BaldwinConfigurationError
 
 
 class EmbeddingSettingsTests(unittest.TestCase):
@@ -54,6 +57,24 @@ class EmbeddingSettingsTests(unittest.TestCase):
         self.assertIsInstance(ollama_provider, OllamaEmbeddingProvider)
         self.assertIsInstance(hashing_provider, HashingEmbeddingProvider)
 
+    def test_load_embedding_settings_wraps_invalid_boolean_setting(self) -> None:
+        """Invalid boolean configuration should be wrapped in a Baldwin configuration error."""
+        with self.assertRaises(BaldwinConfigurationError):
+            load_embedding_settings({"enable_fallback": "not-a-bool"})
+
+    def test_load_embedding_settings_wraps_invalid_numeric_settings(self) -> None:
+        """Invalid numeric settings should be wrapped with configuration context."""
+        with self.assertRaises(BaldwinConfigurationError):
+            load_embedding_settings({"timeout_seconds": "fast"})
+
+        with self.assertRaises(BaldwinConfigurationError):
+            load_embedding_settings({"hashing_dimensions": "wide"})
+
+    def test_build_embedding_provider_wraps_unsupported_provider(self) -> None:
+        """Unsupported provider names should raise a Baldwin configuration error."""
+        with self.assertRaises(BaldwinConfigurationError):
+            build_embedding_provider(load_embedding_settings({"provider_name": "unknown"}))
+
 
 class HashingEmbeddingProviderTests(unittest.TestCase):
     """Behavioral tests for deterministic hashing embeddings."""
@@ -70,6 +91,18 @@ class HashingEmbeddingProviderTests(unittest.TestCase):
         self.assertEqual(first.model_name, "hashing-v1")
         self.assertEqual(first.dimensions, 32)
         self.assertAlmostEqual(sum(value * value for value in first.vector), 1.0, places=6)
+
+    def test_hashing_provider_wraps_validation_failures(self) -> None:
+        """Hashing provider validation should raise EmbeddingProviderError."""
+        with self.assertRaises(EmbeddingProviderError):
+            HashingEmbeddingProvider(dimensions=4)
+
+        provider = HashingEmbeddingProvider(dimensions=32, model_name="hashing-v1")
+        with self.assertRaises(EmbeddingProviderError):
+            provider.embed_texts([])
+
+        with self.assertRaises(EmbeddingProviderError):
+            provider.embed_texts(["   "])
 
 
 class OllamaEmbeddingProviderTests(unittest.TestCase):
@@ -123,7 +156,7 @@ class OllamaEmbeddingProviderTests(unittest.TestCase):
                     http_request.full_url,
                     400,
                     "Bad Request",
-                    hdrs=None,
+                    hdrs=Message(),
                     fp=io.BytesIO(b'{"error":"the input length exceeds the context length"}'),
                 )
 
@@ -157,6 +190,21 @@ class OllamaEmbeddingProviderTests(unittest.TestCase):
         self.assertAlmostEqual(sum(value * value for value in result.vector), 1.0, places=6)
         self.assertGreater(urlopen.call_count, 1)
 
+    @patch("baldwin.embedding.providers.request.urlopen")
+    def test_ollama_provider_wraps_non_numeric_embedding_values(self, urlopen: MagicMock) -> None:
+        """Non-numeric embedding payload values should be translated into EmbeddingProviderError."""
+        response = MagicMock()
+        response.read.return_value = json.dumps({"embeddings": [["abc", 1.0]]}).encode("utf-8")
+        urlopen.return_value.__enter__.return_value = response
+
+        provider = OllamaEmbeddingProvider()
+
+        with self.assertRaises(EmbeddingProviderError) as context:
+            provider.embed_texts(["hello world"])
+
+        self.assertIn("input index 0", str(context.exception))
+        self.assertIsInstance(context.exception.__cause__, ValueError)
+
 
 class EmbeddingServiceTests(unittest.TestCase):
     """Coverage for shared provider fallback behavior."""
@@ -165,7 +213,8 @@ class EmbeddingServiceTests(unittest.TestCase):
         """The embedding service should return the fallback embedding explicitly."""
 
         class FailingProvider:
-            def embed_texts(self, texts: list[str]) -> list[object]:
+            def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
+                del texts
                 raise EmbeddingProviderError("primary failed")
 
         service = build_embedding_service(

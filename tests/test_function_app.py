@@ -84,6 +84,18 @@ class FunctionAppEndpointTests(unittest.TestCase):
         self.assertEqual(fetch_recent_emails.call_args.args[0], 1)
         self.assertEqual(fetch_recent_emails.call_args.args[1].folders, ("INBOX", "Archive"))
 
+    def test_scan_mail_returns_400_for_invalid_days_parameter(self) -> None:
+        """The scan_mail endpoint should translate Baldwin validation errors into a 400 response."""
+        response = function_app.scan_mail(
+            _json_request("GET", "http://localhost/api/scan-mail", params={"days": "abc"})
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            json.loads(response.get_body()),
+            {"error": "The 'days' query parameter must be an integer, got 'abc'."},
+        )
+
     def test_send_digest_returns_502_for_smtp_failures(self) -> None:
         """The send_digest endpoint should return a 502 status code with a generic error message
         if the digest delivery service raises an EmailDeliveryError due to SMTP issues."""

@@ -1,6 +1,11 @@
 """Public package exports for Baldwin email helpers."""
 
-from baldwin.exceptions import EmailDeliveryError, EmailFetchError, EmailServiceError
+from baldwin.exceptions import (
+    EmailDeliveryError,
+    EmailFetchError,
+    EmailNormalizationError,
+    EmailServiceError,
+)
 
 from .email_service import DEFAULT_IMAP_FOLDER, Email, EmailService, MailboxFolders
 from .postgres_store import PostgresEmailVectorStore, StoreResult
@@ -11,6 +16,7 @@ __all__ = [
     "Email",
     "EmailDeliveryError",
     "EmailFetchError",
+    "EmailNormalizationError",
     "EmailNormalizer",
     "EmailService",
     "EmailServiceError",

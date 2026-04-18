@@ -17,6 +17,7 @@ from azure.functions import HttpRequest, HttpResponse
 from azure.storage.blob import BlobServiceClient
 
 from baldwin.email import DEFAULT_IMAP_FOLDER, EmailDeliveryError, EmailFetchError, EmailService, MailboxFolders
+from baldwin.exceptions import BaldwinConfigurationError, BaldwinValidationError
 
 JSON_MIMETYPE = "application/json"
 MARKDOWN_MIMETYPE = "text/markdown"
@@ -35,7 +36,7 @@ class EnvironmentSettings:
         """Get a required setting value or raise an error if it's missing."""
         value = self.environ.get(name)
         if not value:
-            raise ValueError(f"App setting '{name}' is required.")
+            raise BaldwinConfigurationError(f"App setting '{name}' is required.")
         return value
 
     def get(self, name: str, default: str | None = None) -> str | None:
@@ -47,7 +48,12 @@ class EnvironmentSettings:
         raw_value = self.environ.get(name)
         if not raw_value:
             return default
-        return int(raw_value)
+        try:
+            return int(raw_value)
+        except ValueError as exc:
+            raise BaldwinConfigurationError(
+                f"App setting '{name}' must be an integer, got {raw_value!r}."
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -67,9 +73,14 @@ class MailboxRequestParser:
     @staticmethod
     def _parse_days(req: HttpRequest) -> int:
         raw_days = req.params.get("days", "1")
-        days = int(raw_days)
+        try:
+            days = int(raw_days)
+        except ValueError as exc:
+            raise BaldwinValidationError(
+                f"The 'days' query parameter must be an integer, got {raw_days!r}."
+            ) from exc
         if days < 1 or days > 30:
-            raise ValueError("The 'days' query parameter must be between 1 and 30.")
+            raise BaldwinValidationError("The 'days' query parameter must be between 1 and 30.")
         return days
 
     def parse_scan_request(self, req: HttpRequest) -> MailScanRequest:
@@ -173,7 +184,7 @@ class SummaryService:
         """Generate a concise summary of an email body, prioritizing the first sentence or truncating to a word limit."""
         normalized = " ".join(body.split())
         if not normalized:
-            raise ValueError("Email body is required for summarization.")
+            raise BaldwinValidationError("Email body is required for summarization.")
 
         sentences = re.split(r"(?<=[.!?])\s+", normalized)
         first_sentence = sentences[0].strip()
@@ -203,7 +214,7 @@ class DigestBuilder:
                 digest_items.append(summary)
 
         if not digest_items:
-            raise ValueError("Summaries are required to build a digest.")
+            raise BaldwinValidationError("Summaries are required to build a digest.")
 
         return digest_items
 
@@ -284,6 +295,9 @@ class MailboxHttpHandlers:
                 scan_request.folders,
             )
             return self.response_factory.json(email_payloads)
+        except BaldwinValidationError as exc:
+            logging.warning("Invalid request for scan_mail: %s", exc)
+            return self.response_factory.json({"error": str(exc)}, status_code=400)
         except ValueError as exc:
             logging.warning("Invalid request for scan_mail: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
@@ -304,6 +318,9 @@ class MailboxHttpHandlers:
             data = req.get_json()
             summary = self.summary_service.summarize(str(data.get("body", "")))
             return self.response_factory.json({"summary": summary})
+        except BaldwinValidationError as exc:
+            logging.warning("Invalid request for summarize_email: %s", exc)
+            return self.response_factory.json({"error": str(exc)}, status_code=400)
         except ValueError as exc:
             logging.warning("Invalid request for summarize_email: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
@@ -314,6 +331,9 @@ class MailboxHttpHandlers:
             data = req.get_json()
             digest = self.digest_builder.build(data.get("summaries", []), data.get("audience", "robert"))
             return self.response_factory.markdown(digest)
+        except BaldwinValidationError as exc:
+            logging.warning("Invalid request for build_digest: %s", exc)
+            return self.response_factory.json({"error": str(exc)}, status_code=400)
         except ValueError as exc:
             logging.warning("Invalid request for build_digest: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
@@ -326,10 +346,15 @@ class MailboxHttpHandlers:
             subject = data.get("subject")
             content = data.get("content")
             if not all([to_address, subject, content]):
-                raise ValueError("Recipient, subject, and content are required to send a digest.")
+                raise BaldwinValidationError(
+                    "Recipient, subject, and content are required to send a digest."
+                )
 
             from_address = self.digest_delivery_service.send(to_address, subject, content)
             return self.response_factory.json({"status": "sent", "from": from_address})
+        except BaldwinValidationError as exc:
+            logging.warning("Invalid request for send_digest: %s", exc)
+            return self.response_factory.json({"error": str(exc)}, status_code=400)
         except ValueError as exc:
             logging.warning("Invalid request for send_digest: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)

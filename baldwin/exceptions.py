@@ -5,8 +5,20 @@ class BaldwinError(RuntimeError):
     """Base runtime error for Baldwin domain failures."""
 
 
+class BaldwinValidationError(BaldwinError):
+    """Raised when Baldwin receives invalid caller input."""
+
+
+class BaldwinConfigurationError(BaldwinValidationError):
+    """Raised when Baldwin configuration is missing or invalid."""
+
+
 class EmailServiceError(BaldwinError):
     """Base error for mailbox and email-delivery failures."""
+
+
+class EmailNormalizationError(BaldwinValidationError):
+    """Raised when Baldwin cannot normalize mailbox content safely."""
 
 
 class EmailFetchError(EmailServiceError):

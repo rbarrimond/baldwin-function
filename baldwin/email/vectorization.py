@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from email.utils import parsedate_to_datetime
 
 from baldwin.embedding import HashingEmbeddingProvider
+from baldwin.exceptions import EmailNormalizationError
 
 from .email_service import Email
 
@@ -22,8 +23,10 @@ def _parse_date(raw_date: str) -> str | None:
 
     try:
         parsed = parsedate_to_datetime(raw_date)
-    except (TypeError, ValueError, IndexError):
-        return None
+    except (TypeError, ValueError, IndexError) as exc:
+        raise EmailNormalizationError(
+            f"Unable to normalize email sent date from value {raw_date!r}."
+        ) from exc
 
     if parsed.tzinfo is None:
         return parsed.isoformat() + "Z"
@@ -97,7 +100,14 @@ class EmailNormalizer:
         normalized_folder = _normalize_whitespace(email_message.folder or "")
         searchable_text = self._build_searchable_text(subject, body)
         if not searchable_text:
-            raise ValueError("Email body or subject is required for vectorization.")
+            raise EmailNormalizationError(
+                "Email body or subject is required for vectorization."
+            )
+
+        try:
+            sent_at = _parse_date(email_message.date)
+        except EmailNormalizationError:
+            sent_at = None
 
         checksum = hashlib.sha256(searchable_text.encode("utf-8")).hexdigest()
         return NormalizedEmail(
@@ -107,7 +117,7 @@ class EmailNormalizer:
             sender=_normalize_whitespace(email_message.sender),
             recipients=self._build_recipients(email_message),
             raw_date=email_message.date,
-            sent_at=_parse_date(email_message.date),
+            sent_at=sent_at,
             folders=[normalized_folder] if normalized_folder else [],
             body=body,
             searchable_text=searchable_text,
@@ -129,8 +139,9 @@ class EmailNormalizer:
                 continue
 
             if existing.content_checksum != normalized_email.content_checksum:
-                raise ValueError(
-                    "Conflicting normalized emails share the same fingerprint but different content checksums."
+                raise EmailNormalizationError(
+                    "Conflicting normalized emails share fingerprint "
+                    f"{normalized_email.fingerprint} but have different content checksums."
                 )
 
             folders = existing.folders.copy()

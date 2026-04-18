@@ -2,7 +2,13 @@
 
 import unittest
 
-from baldwin.email import Email, EmailNormalizer, HashingVectorizer, PostgresEmailVectorStore
+from baldwin.email import (
+    Email,
+    EmailNormalizationError,
+    EmailNormalizer,
+    HashingVectorizer,
+    PostgresEmailVectorStore,
+)
 
 
 class EmailNormalizerTests(unittest.TestCase):
@@ -72,6 +78,24 @@ class EmailNormalizerTests(unittest.TestCase):
 
         self.assertIsNone(normalized.sent_at)
 
+    def test_empty_subject_and_body_raise_email_normalization_error(self) -> None:
+        """Normalization should raise a Baldwin error when searchable content is empty."""
+        email_message = Email(
+            id="<message-123@example.com>",
+            subject="   ",
+            sender="sender@example.com",
+            to=["recipient@example.com"],
+            cc=None,
+            bcc=None,
+            reply_to=None,
+            date="Fri, 11 Apr 2026 09:15:00 +0000",
+            body="\n\n",
+            headers={"Message-ID": "<message-123@example.com>"},
+        )
+
+        with self.assertRaises(EmailNormalizationError):
+            EmailNormalizer().normalize(email_message)
+
     def test_merge_duplicates_preserves_folder_provenance(self) -> None:
         """Duplicate normalized emails should collapse into one record with ordered folder provenance."""
         normalizer = EmailNormalizer()
@@ -110,6 +134,45 @@ class EmailNormalizerTests(unittest.TestCase):
 
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].folders, ["INBOX", "Archive"])
+
+    def test_merge_duplicates_raises_email_normalization_error_on_checksum_conflict(self) -> None:
+        """Checksum conflicts should raise a Baldwin normalization error with context."""
+        normalizer = EmailNormalizer()
+        first = normalizer.normalize(
+            Email(
+                id="<message-123@example.com>",
+                subject="Subject",
+                sender="sender@example.com",
+                to=["recipient@example.com"],
+                cc=None,
+                bcc=None,
+                reply_to=None,
+                date="Fri, 11 Apr 2026 09:15:00 +0000",
+                body="First body",
+                headers={"Message-ID": "<message-123@example.com>"},
+                folder="INBOX",
+            )
+        )
+        conflicting = normalizer.normalize(
+            Email(
+                id="<message-123@example.com>",
+                subject="Subject",
+                sender="sender@example.com",
+                to=["recipient@example.com"],
+                cc=None,
+                bcc=None,
+                reply_to=None,
+                date="Fri, 11 Apr 2026 09:15:00 +0000",
+                body="Second body",
+                headers={"Message-ID": "<message-123@example.com>"},
+                folder="Archive",
+            )
+        )
+
+        with self.assertRaises(EmailNormalizationError) as context:
+            EmailNormalizer.merge_duplicates([first, conflicting])
+
+        self.assertIn(first.fingerprint, str(context.exception))
 
 
 class HashingVectorizerTests(unittest.TestCase):

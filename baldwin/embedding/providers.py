@@ -11,7 +11,7 @@ from hashlib import sha256
 from typing import Any, Mapping, Protocol
 from urllib import error, request
 
-from baldwin.exceptions import BaldwinError
+from baldwin.exceptions import BaldwinConfigurationError, BaldwinError
 
 
 DEFAULT_EMBEDDING_PROVIDER = "ollama"
@@ -92,7 +92,7 @@ def _coerce_bool(value: str | None, default: bool) -> bool:
         return True
     if normalized in {"0", "false", "no", "off"}:
         return False
-    raise ValueError(f"Invalid boolean setting value: {value}")
+    raise BaldwinConfigurationError(f"Invalid boolean setting value: {value}")
 
 
 def load_embedding_settings(overrides: Mapping[str, Any] | None = None) -> EmbeddingSettings:
@@ -115,17 +115,30 @@ def load_embedding_settings(overrides: Mapping[str, Any] | None = None) -> Embed
         or os.getenv("EMBEDDING_BASE_URL")
         or DEFAULT_EMBEDDING_BASE_URL
     ).strip().rstrip("/")
-    timeout_seconds = float(
+    timeout_value = (
         overrides.get("timeout_seconds")
         or os.getenv("EMBEDDING_TIMEOUT_SECONDS")
         or DEFAULT_TIMEOUT_SECONDS
     )
-    hashing_dimensions = int(
+    try:
+        timeout_seconds = float(timeout_value)
+    except (TypeError, ValueError) as exc:
+        raise BaldwinConfigurationError(
+            f"Invalid embedding timeout setting: {timeout_value!r}."
+        ) from exc
+
+    hashing_dimensions_value = (
         overrides.get("hashing_dimensions")
         or os.getenv("EMBEDDING_HASH_DIMENSIONS")
         or os.getenv("EMAIL_VECTOR_DIMENSIONS")
         or DEFAULT_HASH_DIMENSIONS
     )
+    try:
+        hashing_dimensions = int(hashing_dimensions_value)
+    except (TypeError, ValueError) as exc:
+        raise BaldwinConfigurationError(
+            f"Invalid embedding hash dimension setting: {hashing_dimensions_value!r}."
+        ) from exc
     fallback_override = overrides.get("fallback_provider_name")
     fallback_provider_name = fallback_override
     if fallback_provider_name is None:
@@ -160,9 +173,9 @@ class HashingEmbeddingProvider:
         provider_name: str = "hashing",
     ):
         if dimensions < 8:
-            raise ValueError("dimensions must be at least 8")
+            raise EmbeddingProviderError("Hashing embedding dimensions must be at least 8.")
         if not model_name:
-            raise ValueError("model_name is required")
+            raise EmbeddingProviderError("Hashing embedding model_name is required.")
 
         self.dimensions = dimensions
         self.model_name = model_name
@@ -171,13 +184,13 @@ class HashingEmbeddingProvider:
     def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
         """Convert input texts into deterministic dense vectors using feature hashing."""
         if not texts:
-            raise ValueError("texts are required for embedding")
+            raise EmbeddingProviderError("Hashing embeddings require at least one input text.")
 
         results: list[EmbeddingResult] = []
         for text in texts:
             normalized_text = _normalize_whitespace(text)
             if not normalized_text:
-                raise ValueError(TEXT_REQUIRED_ERROR)
+                raise EmbeddingProviderError(TEXT_REQUIRED_ERROR)
 
             vector = [0.0] * self.dimensions
             for token in _tokenize(normalized_text):
@@ -213,11 +226,11 @@ class OllamaEmbeddingProvider:
         provider_name: str = "ollama",
     ):
         if not base_url:
-            raise ValueError("base_url is required")
+            raise EmbeddingProviderError("Ollama embedding base_url is required.")
         if not model_name:
-            raise ValueError("model_name is required")
+            raise EmbeddingProviderError("Ollama embedding model_name is required.")
         if timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be greater than 0")
+            raise EmbeddingProviderError("Ollama embedding timeout_seconds must be greater than 0.")
 
         self.base_url = base_url.rstrip("/")
         self.model_name = model_name
@@ -227,11 +240,11 @@ class OllamaEmbeddingProvider:
     def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
         """Convert input texts into embedding vectors by making requests to the Ollama API."""
         if not texts:
-            raise ValueError("texts are required for embedding")
+            raise EmbeddingProviderError("Ollama embeddings require at least one input text.")
 
         normalized_inputs = [_normalize_whitespace(text) for text in texts]
         if any(not text for text in normalized_inputs):
-            raise ValueError(TEXT_REQUIRED_ERROR)
+            raise EmbeddingProviderError(TEXT_REQUIRED_ERROR)
 
         return [self._embed_single_text(text) for text in normalized_inputs]
 
@@ -252,7 +265,7 @@ class OllamaEmbeddingProvider:
     def _request_embeddings(self, texts: list[str]) -> list[EmbeddingResult]:
         normalized_inputs = [_normalize_whitespace(text) for text in texts]
         if any(not text for text in normalized_inputs):
-            raise ValueError(TEXT_REQUIRED_ERROR)
+            raise EmbeddingProviderError(TEXT_REQUIRED_ERROR)
 
         payload = json.dumps({"model": self.model_name, "input": normalized_inputs}).encode("utf-8")
         endpoint = f"{self.base_url}/api/embed"
@@ -293,7 +306,12 @@ class OllamaEmbeddingProvider:
         for index, raw_embedding in enumerate(raw_embeddings):
             if not isinstance(raw_embedding, list) or not raw_embedding:
                 raise EmbeddingProviderError("Ollama returned an invalid embedding vector.")
-            vector = [float(value) for value in raw_embedding]
+            try:
+                vector = [float(value) for value in raw_embedding]
+            except (TypeError, ValueError) as exc:
+                raise EmbeddingProviderError(
+                    f"Ollama returned a non-numeric embedding value for input index {index}."
+                ) from exc
             results.append(
                 EmbeddingResult(
                     vector=vector,
@@ -390,7 +408,9 @@ def build_embedding_provider(settings: EmbeddingSettings) -> EmbeddingProvider:
             dimensions=settings.hashing_dimensions,
             model_name=settings.model_name or DEFAULT_HASH_MODEL,
         )
-    raise ValueError(f"Unsupported embedding provider: {settings.provider_name}")
+    raise BaldwinConfigurationError(
+        f"Unsupported embedding provider: {settings.provider_name}"
+    )
 
 
 def build_fallback_provider(settings: EmbeddingSettings) -> EmbeddingProvider | None:
@@ -403,7 +423,9 @@ def build_fallback_provider(settings: EmbeddingSettings) -> EmbeddingProvider | 
         return None
     if settings.fallback_provider_name == "hashing":
         return HashingEmbeddingProvider(dimensions=settings.hashing_dimensions)
-    raise ValueError(f"Unsupported embedding fallback provider: {settings.fallback_provider_name}")
+    raise BaldwinConfigurationError(
+        f"Unsupported embedding fallback provider: {settings.fallback_provider_name}"
+    )
 
 
 class EmbeddingService:
