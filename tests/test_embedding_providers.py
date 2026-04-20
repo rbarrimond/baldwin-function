@@ -213,7 +213,9 @@ class EmbeddingServiceTests(unittest.TestCase):
         """The embedding service should return the fallback embedding explicitly."""
 
         class FailingProvider:
+            """A test provider that simulates a failure for all embedding requests."""
             def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
+                """Simulate a provider failure by raising an error."""
                 del texts
                 raise EmbeddingProviderError("primary failed")
 
