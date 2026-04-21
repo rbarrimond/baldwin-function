@@ -7,7 +7,7 @@ This repository contains the Azure Function App that powers the backend for Bald
 
 The following HTTP-triggered Azure Functions are implemented in `function_app.py` using the Python V2 decorator model:
 
-- `GET /api/scan-mail`: Fetch recent IMAP emails from one or more folders and optionally persist them to Blob Storage.
+- `GET /api/scan-mail`: Fetch recent IMAP emails from one or more folders, vectorize them, and persist them to PostgreSQL.
 - `POST /api/summarize-email`: Create a concise local summary from an email body.
 - `POST /api/build-digest`: Combine multiple summaries into a Markdown digest.
 - `POST /api/send-digest`: Send a digest email over SMTP.
@@ -53,7 +53,7 @@ These should be set via `app_settings` in Terraform or `local.settings.json` for
 - `IMAP_HOST` (optional, defaults to `imap.mail.me.com`)
 - `IMAP_PORT` (optional, defaults to `993`)
 - `IMAP_FOLDERS` (optional, comma-separated default IMAP folder list; defaults to `INBOX`)
-- `DATABASE_URL` (required for mailbox vectorization)
+- `DATABASE_URL` (required when invoking `/api/scan-mail` or the mailbox vectorization script)
 - `SMTP_SERVER`
 - `SMTP_PORT`
 - `SMTP_USERNAME`
@@ -69,7 +69,6 @@ These should be set via `app_settings` in Terraform or `local.settings.json` for
 - `EMBEDDING_HASH_DIMENSIONS` (optional, defaults to `256`)
 - `EMAIL_VECTOR_DIMENSIONS` (optional compatibility alias for hashing dimensions)
 - `EMAIL_VECTOR_MODEL` (optional compatibility alias for embedding model)
-- `AzureWebJobsStorage` (optional for local-only scanning, required for blob persistence)
 
 For the vectorization script, `MAIL_USERNAME` and `MAIL_APP_PASSWORD` are also accepted as compatibility aliases for the IMAP credentials.
 
@@ -106,6 +105,8 @@ python scripts/vectorize_mailbox.py --days 1 --folder INBOX --folder Archive --d
 ```
 
 The legacy `scripts/vectorize_inbox.py` entrypoint remains as a compatibility shim.
+
+Endpoint-specific ingestion details live in `docs/SCAN_MAIL.md`.
 
 Schema and storage details live in `docs/EMAIL_VECTORIZATION.md`.
 

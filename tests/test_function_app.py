@@ -1,8 +1,11 @@
 """HTTP contract tests for the Azure Function endpoints."""
 
+import importlib
 import imaplib
 import json
+import os
 import smtplib
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -57,15 +60,15 @@ class FunctionAppEndpointTests(unittest.TestCase):
 
     def test_scan_mail_returns_502_for_imap_failures(self) -> None:
         """The scan_mail endpoint should return a 502 status code with a generic error message
-          if the mailbox scan service raises an EmailFetchError due to IMAP issues."""
-        def raise_imap_failure(days: int, folders: MailboxFolders) -> list[dict]:
+        if the ingestion service raises an EmailFetchError due to IMAP issues."""
+        def raise_imap_failure(days: int, folders: MailboxFolders) -> dict:
             del days, folders
             try:
                 raise imaplib.IMAP4.error("invalid credentials")
             except imaplib.IMAP4.error as exc:
                 raise EmailFetchError("Failed to fetch emails from IMAP folders: INBOX, Archive.") from exc
 
-        with patch.object(function_app.HANDLERS.mailbox_scan_service, "fetch_recent_emails", side_effect=raise_imap_failure):
+        with patch.object(function_app.HANDLERS.ingestion_service, "ingest_mailbox", side_effect=raise_imap_failure):
             response = function_app.scan_mail(
                 _json_request("GET", "http://localhost/api/scan-mail", params={"days": "1"})
             )
@@ -74,15 +77,27 @@ class FunctionAppEndpointTests(unittest.TestCase):
         self.assertEqual(json.loads(response.get_body()), {"error": "Unable to read from the requested IMAP folders."})
 
     def test_scan_mail_passes_requested_folders_to_service(self) -> None:
-        """The scan_mail endpoint should pass the requested IMAP folders to the mailbox scan service."""
-        with patch.object(function_app.HANDLERS.mailbox_scan_service, "fetch_recent_emails", return_value=[]) as fetch_recent_emails:
+        """The scan_mail endpoint should pass the requested IMAP folders to the ingestion service."""
+        with patch.object(function_app.HANDLERS.ingestion_service, "ingest_mailbox", return_value={"total_fetched": 0, "total_normalized": 0, "total_deduped": 0, "persisted": []}) as ingest_mailbox:
             response = function_app.scan_mail(
                 _json_request("GET", "http://localhost/api/scan-mail", params={"days": "1", "folders": "INBOX,Archive"})
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(fetch_recent_emails.call_args.args[0], 1)
-        self.assertEqual(fetch_recent_emails.call_args.args[1].folders, ("INBOX", "Archive"))
+        self.assertEqual(ingest_mailbox.call_args.args[0], 1)
+        self.assertEqual(ingest_mailbox.call_args.args[1].folders, ("INBOX", "Archive"))
+
+    def test_function_app_import_does_not_require_database_url(self) -> None:
+        """Importing function_app should not require DATABASE_URL before scan-mail is invoked."""
+        original_module = sys.modules.pop("function_app", None)
+        try:
+            with patch.dict(os.environ, {}, clear=True):
+                imported_module = importlib.import_module("function_app")
+            self.assertTrue(hasattr(imported_module, "HANDLERS"))
+        finally:
+            sys.modules.pop("function_app", None)
+            if original_module is not None:
+                sys.modules["function_app"] = original_module
 
     def test_scan_mail_returns_400_for_invalid_days_parameter(self) -> None:
         """The scan_mail endpoint should translate Baldwin validation errors into a 400 response."""

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 - 2026-04-20
+
+- Rebuilt the HTTP handler module around typed request parsing and consistent response factories after the route layer had drifted into a broken state.
+- Delayed `scan-mail` ingestion dependency construction so the Azure Function app can import without requiring `DATABASE_URL` until mailbox ingestion is actually invoked.
+- Updated endpoint documentation and regression coverage to match the current mailbox-ingestion contract.
+
 ## 0.5.0 - 2026-04-17
 
 - Renamed the mailbox vectorization entrypoint to `scripts/vectorize_mailbox.py` and kept `scripts/vectorize_inbox.py` as a compatibility shim.

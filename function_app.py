@@ -6,7 +6,7 @@ summarize messages, build digests, and email completed digests. The functions
 are designed to be called via a Custom GPT or external automation pipeline.
 
 Endpoints:
-- GET  /api/scan-mail        - IMAP email fetcher
+- GET  /api/scan-mail        - IMAP mailbox ingestion and vector persistence summary
 - POST /api/summarize-email - Summarizes individual email body
 - POST /api/build-digest    - Formats summaries into Markdown digest
 - POST /api/send-digest     - SMTP-based email dispatch
@@ -22,7 +22,7 @@ HANDLERS = build_http_handlers()
 @app.function_name(name="scan_mail")
 @app.route(route="scan-mail", methods=["GET"])
 def scan_mail(req: HttpRequest) -> HttpResponse:
-    """Fetch recent IMAP emails from one or more folders."""
+    """Ingest recent IMAP emails from one or more folders."""
     return HANDLERS.scan_mail(req)
 
 @app.function_name(name="summarize_email")
