@@ -64,6 +64,7 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                                 sync_run_id UUID NOT NULL,
                                 was_present_in_mailbox BOOLEAN NOT NULL DEFAULT TRUE,
                                 folder_names JSONB NOT NULL DEFAULT '[]'::jsonb,
+                                folder_uids JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                                 last_seen_at TIMESTAMPTZ NOT NULL,
                                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                                 PRIMARY KEY (document_id, sync_run_id)
@@ -73,6 +74,9 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                             sync_runs_table=sql.Identifier("document_sync_runs"),
                             document_table=sql.Identifier(self.document_table),
                         )
+                    )
+                    cursor.execute(
+                        "ALTER TABLE document_sync_runs ADD COLUMN IF NOT EXISTS folder_uids JSONB NOT NULL DEFAULT '{}'::jsonb"
                     )
         except psycopg.Error as exc:
             raise VectorStoreError("Failed to bootstrap PostgreSQL email sync state.") from exc
@@ -87,6 +91,7 @@ class PostgresEmailVectorStore(PostgresVectorStore):
             "sent_at": normalized_email.sent_at,
             "folder": normalized_email.folders[0] if normalized_email.folders else None,
             "folders": normalized_email.folders,
+            "folder_uids": normalized_email.folder_uids,
             "headers": normalized_email.headers,
         }
         return VectorDocument(
@@ -177,6 +182,7 @@ class PostgresEmailVectorStore(PostgresVectorStore):
         document_key: str,
         sync_run_id: str,
         folder_names: list[str],
+        folder_uids: dict[str, int] | None = None,
         last_seen_at: datetime | None = None,
         was_present_in_mailbox: bool = True,
     ) -> None:
@@ -206,6 +212,7 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                             sync_run_id,
                             was_present_in_mailbox,
                             folder_names,
+                            folder_uids,
                             last_seen_at
                         )
                         VALUES (
@@ -213,11 +220,13 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                             %(sync_run_id)s,
                             %(was_present_in_mailbox)s,
                             %(folder_names)s::jsonb,
+                            %(folder_uids)s::jsonb,
                             %(last_seen_at)s
                         )
                         ON CONFLICT (document_id, sync_run_id) DO UPDATE SET
                             was_present_in_mailbox = EXCLUDED.was_present_in_mailbox,
                             folder_names = EXCLUDED.folder_names,
+                            folder_uids = EXCLUDED.folder_uids,
                             last_seen_at = EXCLUDED.last_seen_at
                         """,
                         {
@@ -225,6 +234,7 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                             "sync_run_id": sync_run_id,
                             "was_present_in_mailbox": was_present_in_mailbox,
                             "folder_names": json.dumps(folder_names),
+                            "folder_uids": json.dumps(folder_uids or {}),
                             "last_seen_at": observed_at,
                         },
                     )
@@ -232,3 +242,131 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                 connection.commit()
         except psycopg.Error as exc:
             raise VectorStoreError("Failed to record document sync observation.") from exc
+
+    def get_mailbox_sync_state(
+        self,
+        *,
+        imap_user: str,
+        imap_host: str,
+        imap_folder: str,
+    ) -> dict[str, Any] | None:
+        """Return the most recent stored sync cursor for an IMAP folder."""
+        try:
+            with psycopg.connect(self.database_url) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT uidvalidity, last_synced_uid, last_sync_time, sync_run_id, total_emails_in_folder
+                        FROM mailbox_sync_state
+                        WHERE imap_user = %(imap_user)s
+                          AND imap_host = %(imap_host)s
+                          AND imap_folder = %(imap_folder)s
+                        ORDER BY last_sync_time DESC
+                        LIMIT 1
+                        """,
+                        {
+                            "imap_user": imap_user,
+                            "imap_host": imap_host,
+                            "imap_folder": imap_folder,
+                        },
+                    )
+                    row = cursor.fetchone()
+        except psycopg.Error as exc:
+            raise VectorStoreError("Failed to read mailbox sync state.") from exc
+
+        if row is None:
+            return None
+
+        return {
+            "uidvalidity": row[0],
+            "last_synced_uid": row[1],
+            "last_sync_time": row[2],
+            "sync_run_id": str(row[3]),
+            "total_emails_in_folder": row[4],
+        }
+
+    def get_current_folder_uids(self, *, folder_name: str) -> dict[str, int]:
+        """Return current persisted document keys to IMAP UIDs for a folder."""
+        try:
+            with psycopg.connect(self.database_url) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        sql.SQL(
+                            """
+                            SELECT document_key, metadata -> 'folder_uids' ->> %(folder_name)s AS folder_uid
+                            FROM {document_table}
+                            WHERE (metadata -> 'folder_uids') ? %(folder_name)s
+                            """
+                        ).format(document_table=sql.Identifier(self.document_table)),
+                        {"folder_name": folder_name},
+                    )
+                    rows = cursor.fetchall()
+        except psycopg.Error as exc:
+            raise VectorStoreError("Failed to read current folder UID state.") from exc
+
+        result: dict[str, int] = {}
+        for document_key, folder_uid in rows:
+            if folder_uid is None:
+                continue
+            try:
+                result[str(document_key)] = int(folder_uid)
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    def remove_folder_membership(self, *, document_key: str, folder_name: str) -> None:
+        """Remove a folder association from the current persisted email metadata."""
+        try:
+            with psycopg.connect(self.database_url) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        sql.SQL(
+                            """
+                            UPDATE {document_table}
+                            SET metadata = jsonb_set(
+                                    jsonb_set(
+                                        metadata,
+                                        '{{folders}}',
+                                        COALESCE(
+                                            (
+                                                SELECT jsonb_agg(value)
+                                                FROM jsonb_array_elements_text(COALESCE(metadata -> 'folders', '[]'::jsonb)) AS value
+                                                WHERE value <> %(folder_name)s
+                                            ),
+                                            '[]'::jsonb
+                                        ),
+                                        true
+                                    ),
+                                    '{{folder_uids}}',
+                                    COALESCE((metadata -> 'folder_uids') - %(folder_name)s, '{}'::jsonb),
+                                    true
+                                )
+                            WHERE document_key = %(document_key)s
+                            """
+                        ).format(document_table=sql.Identifier(self.document_table)),
+                        {"document_key": document_key, "folder_name": folder_name},
+                    )
+                connection.commit()
+        except psycopg.Error as exc:
+            raise VectorStoreError("Failed to remove reconciled folder membership.") from exc
+
+    def delete_documents_without_folders(self) -> int:
+        """Delete email documents that no longer belong to any tracked folder."""
+        try:
+            with psycopg.connect(self.database_url) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        sql.SQL(
+                            """
+                            DELETE FROM {document_table}
+                            WHERE source_type = 'email'
+                              AND jsonb_array_length(COALESCE(metadata -> 'folders', '[]'::jsonb)) = 0
+                            """
+                        ).format(document_table=sql.Identifier(self.document_table))
+                    )
+                    deleted_count = cursor.rowcount or 0
+                connection.commit()
+        except psycopg.Error as exc:
+            raise VectorStoreError("Failed to delete stale email documents.") from exc
+
+        return deleted_count

@@ -46,6 +46,7 @@ class NormalizedEmail:
     raw_date: str
     sent_at: str | None
     folders: list[str]
+    folder_uids: dict[str, int]
     body: str
     searchable_text: str
     content_checksum: str
@@ -54,6 +55,26 @@ class NormalizedEmail:
 
 class EmailNormalizer:
     """Converts mailbox emails into a stable persistence shape."""
+
+    @staticmethod
+    def _merge_folders(existing: NormalizedEmail, candidate: NormalizedEmail) -> list[str]:
+        folders = existing.folders.copy()
+        for folder in candidate.folders:
+            if folder not in folders:
+                folders.append(folder)
+        return folders
+
+    @staticmethod
+    def _merge_folder_uids(existing: NormalizedEmail, candidate: NormalizedEmail) -> dict[str, int]:
+        folder_uids = existing.folder_uids.copy()
+        for folder_name, folder_uid in candidate.folder_uids.items():
+            if folder_name in folder_uids and folder_uids[folder_name] != folder_uid:
+                raise EmailNormalizationError(
+                    "Conflicting normalized emails share fingerprint "
+                    f"{candidate.fingerprint} but have different IMAP UIDs for folder {folder_name!r}."
+                )
+            folder_uids[folder_name] = folder_uid
+        return folder_uids
 
     @staticmethod
     def _build_recipients(email_message: Email) -> list[str]:
@@ -119,6 +140,9 @@ class EmailNormalizer:
             raw_date=email_message.date,
             sent_at=sent_at,
             folders=[normalized_folder] if normalized_folder else [],
+            folder_uids={normalized_folder: email_message.imap_uid}
+            if normalized_folder and email_message.imap_uid is not None
+            else {},
             body=body,
             searchable_text=searchable_text,
             content_checksum=checksum,
@@ -144,11 +168,11 @@ class EmailNormalizer:
                     f"{normalized_email.fingerprint} but have different content checksums."
                 )
 
-            folders = existing.folders.copy()
-            for folder in normalized_email.folders:
-                if folder not in folders:
-                    folders.append(folder)
-            merged[normalized_email.fingerprint] = replace(existing, folders=folders)
+            merged[normalized_email.fingerprint] = replace(
+                existing,
+                folders=EmailNormalizer._merge_folders(existing, normalized_email),
+                folder_uids=EmailNormalizer._merge_folder_uids(existing, normalized_email),
+            )
 
         return [merged[fingerprint] for fingerprint in ordered_fingerprints]
 

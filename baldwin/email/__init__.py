@@ -7,7 +7,13 @@ from baldwin.exceptions import (
     EmailServiceError,
 )
 
-from .email_service import DEFAULT_IMAP_FOLDER, Email, EmailService, MailboxFolders
+from .email_service import (
+    DEFAULT_IMAP_FOLDER,
+    Email,
+    EmailService,
+    MailboxFolders,
+    MailboxFolderStatus,
+)
 from .postgres_store import PostgresEmailVectorStore, StoreResult
 from .vectorization import EmailNormalizer, HashingVectorizer, NormalizedEmail
 
@@ -22,6 +28,7 @@ __all__ = [
     "EmailServiceError",
     "HashingVectorizer",
     "MailboxFolders",
+    "MailboxFolderStatus",
     "NormalizedEmail",
     "PostgresEmailVectorStore",
     "StoreResult",

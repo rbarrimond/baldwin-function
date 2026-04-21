@@ -14,6 +14,19 @@ from pydantic import BaseModel
 from baldwin.exceptions import EmailFetchError
 
 DEFAULT_IMAP_FOLDER = "INBOX"
+IMAP_TRANSPORT_ERROR = imaplib.IMAP4.error
+CLOSE_SESSION_ERROR_MESSAGE = "Failed to close the IMAP mailbox session."
+
+
+@dataclass(frozen=True)
+class MailboxFolderStatus:
+    """Current server-side IMAP state for a mailbox folder."""
+
+    folder: str
+    message_count: int
+    uidvalidity: int
+    uidnext: int | None
+    uids: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -69,6 +82,7 @@ class Email(BaseModel):
     body: str
     headers: Dict[str, str]
     folder: Optional[str] = None
+    imap_uid: Optional[int] = None
 
 
 class EmailService:
@@ -148,7 +162,56 @@ class EmailService:
 
         return self._decode_payload(message)
 
-    def _parse_message(self, message: Message, folder: str) -> Email:
+    @staticmethod
+    def _parse_int_bytes(raw_value: bytes | bytearray | memoryview | str | None) -> int | None:
+        if raw_value is None:
+            return None
+        if isinstance(raw_value, memoryview):
+            value = raw_value.tobytes().decode("ascii")
+        elif isinstance(raw_value, bytearray):
+            value = bytes(raw_value).decode("ascii")
+        elif isinstance(raw_value, bytes):
+            value = raw_value.decode("ascii")
+        else:
+            value = raw_value
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
+    def _read_numeric_response(self, mail: imaplib.IMAP4, name: str) -> int | None:
+        response = mail.response(name)
+        if not isinstance(response, tuple) or len(response) < 2:
+            return None
+
+        values = response[1]
+        if not isinstance(values, (list, tuple)):
+            return None
+
+        for raw_value in values:
+            parsed_value = self._parse_int_bytes(raw_value)
+            if parsed_value is not None:
+                return parsed_value
+        return None
+
+    @staticmethod
+    def _parse_uid_list(data: Sequence[bytes] | None) -> tuple[int, ...]:
+        if not data or not data[0]:
+            return ()
+
+        raw_values = data[0].decode("ascii", errors="ignore").split()
+        parsed_values: list[int] = []
+        for raw_value in raw_values:
+            try:
+                parsed_values.append(int(raw_value))
+            except ValueError:
+                continue
+        return tuple(parsed_values)
+
+    def _parse_message(self, message: Message, folder: str, imap_uid: int | None = None) -> Email:
         return Email(
             id=self._decode_header_value(message.get("Message-ID")),
             subject=self._decode_header_value(message.get("Subject")),
@@ -161,6 +224,7 @@ class EmailService:
             body=self._extract_body(message),
             headers=dict(message.items()),
             folder=folder,
+            imap_uid=imap_uid,
         )
 
     @staticmethod
@@ -179,11 +243,22 @@ class EmailService:
         mail.starttls(ssl_context=self._create_tls_context())
         return mail
 
-    def _fetch_email_batch(self, mail: imaplib.IMAP4, email_id: bytes, folder: str) -> List[Email]:
-        status, message_data = mail.fetch(email_id.decode("ascii"), "(BODY.PEEK[])")
+    def _fetch_email_batch(
+        self,
+        mail: imaplib.IMAP4,
+        email_id: bytes,
+        folder: str,
+        *,
+        use_uid: bool = False,
+    ) -> List[Email]:
+        identifier = email_id.decode("ascii")
+        if use_uid:
+            status, message_data = mail.uid("fetch", identifier, "(BODY.PEEK[])")
+        else:
+            status, message_data = mail.fetch(identifier, "(BODY.PEEK[])")
         if status != "OK":
             raise EmailFetchError(
-                f"Unable to fetch email payload for id={email_id.decode('ascii')} in folder '{folder}'."
+                f"Unable to fetch email payload for id={identifier} in folder '{folder}'."
             )
 
         parsed_messages: List[Email] = []
@@ -197,9 +272,33 @@ class EmailService:
                 continue
 
             message = email.message_from_bytes(bytes(raw_message))
-            parsed_messages.append(self._parse_message(message, folder))
+            parsed_messages.append(
+                self._parse_message(
+                    message,
+                    folder,
+                    imap_uid=self._parse_int_bytes(identifier) if use_uid else None,
+                )
+            )
 
         return parsed_messages
+
+    def _select_folder_status(self, mail: imaplib.IMAP4, folder: str) -> MailboxFolderStatus:
+        status, data = mail.select(folder)
+        if status != "OK":
+            raise EmailFetchError(f"Unable to select IMAP folder '{folder}'.")
+
+        status, uid_data = mail.uid("search", "UTF-8", "ALL")
+        if status != "OK":
+            raise EmailFetchError(f"Unable to enumerate IMAP UIDs for folder '{folder}'.")
+
+        message_count = self._parse_int_bytes(data[0] if data else None) or 0
+        return MailboxFolderStatus(
+            folder=folder,
+            message_count=message_count,
+            uidvalidity=self._read_numeric_response(mail, "UIDVALIDITY") or 0,
+            uidnext=self._read_numeric_response(mail, "UIDNEXT"),
+            uids=self._parse_uid_list(uid_data),
+        )
 
     def _fetch_folder_emails(
         self,
@@ -207,9 +306,7 @@ class EmailService:
         folder: str,
         days: int,
     ) -> List[Email]:
-        status, _ = mail.select(folder)
-        if status != "OK":
-            raise EmailFetchError(f"Unable to select IMAP folder '{folder}'.")
+        self._select_folder_status(mail, folder)
 
         status, data = mail.search(None, self._build_since_query(days))
         if status != "OK":
@@ -220,6 +317,87 @@ class EmailService:
         for email_id in email_ids:
             emails.extend(self._fetch_email_batch(mail, email_id, folder))
         return emails
+
+    def _fetch_folder_emails_by_uid_range(
+        self,
+        mail: imaplib.IMAP4,
+        folder: str,
+        start_uid: int,
+        end_uid: int | None = None,
+    ) -> List[Email]:
+        if start_uid < 1:
+            raise ValueError("start_uid must be greater than 0")
+
+        self._select_folder_status(mail, folder)
+        uid_range = f"{start_uid}:{end_uid or '*'}"
+        status, data = mail.uid("search", "UTF-8", f"UID {uid_range}")
+        if status != "OK":
+            raise EmailFetchError(
+                f"Unable to search IMAP UIDs in folder '{folder}' for range {uid_range}."
+            )
+
+        emails: List[Email] = []
+        for email_uid in self._parse_uid_list(data):
+            emails.extend(
+                self._fetch_email_batch(
+                    mail,
+                    str(email_uid).encode("ascii"),
+                    folder,
+                    use_uid=True,
+                )
+            )
+        return emails
+
+    def get_folder_status(self, folder: str) -> MailboxFolderStatus:
+        """Return IMAP state metadata for a single folder."""
+        mail: imaplib.IMAP4 | None = None
+        pending_error: BaseException | None = None
+        try:
+            mail = self._connect_mailbox()
+            mail.login(self.imap_user, self.imap_pass)
+            return self._select_folder_status(mail, folder)
+        except EmailFetchError as exc:
+            pending_error = exc
+            raise
+        except (IMAP_TRANSPORT_ERROR, OSError) as exc:
+            pending_error = exc
+            raise EmailFetchError(f"Failed to inspect IMAP folder state: {folder}.") from exc
+        finally:
+            if mail is not None:
+                try:
+                    mail.logout()
+                except (IMAP_TRANSPORT_ERROR, OSError) as exc:
+                    if pending_error is None:
+                        raise EmailFetchError(CLOSE_SESSION_ERROR_MESSAGE) from exc
+
+    def fetch_emails_by_uid_range(
+        self,
+        folder: str,
+        start_uid: int,
+        end_uid: int | None = None,
+    ) -> List[Email]:
+        """Fetch emails by IMAP UID range within a single folder."""
+        mail: imaplib.IMAP4 | None = None
+        pending_error: BaseException | None = None
+        try:
+            mail = self._connect_mailbox()
+            mail.login(self.imap_user, self.imap_pass)
+            return self._fetch_folder_emails_by_uid_range(mail, folder, start_uid, end_uid)
+        except EmailFetchError as exc:
+            pending_error = exc
+            raise
+        except (IMAP_TRANSPORT_ERROR, OSError) as exc:
+            pending_error = exc
+            raise EmailFetchError(
+                f"Failed to fetch IMAP UIDs from folder '{folder}' starting at {start_uid}."
+            ) from exc
+        finally:
+            if mail is not None:
+                try:
+                    mail.logout()
+                except (IMAP_TRANSPORT_ERROR, OSError) as exc:
+                    if pending_error is None:
+                        raise EmailFetchError(CLOSE_SESSION_ERROR_MESSAGE) from exc
 
     def fetch_emails(
         self,
@@ -254,13 +432,13 @@ class EmailService:
         except EmailFetchError as exc:
             pending_error = exc
             raise
-        except (imaplib.IMAP4.error, OSError) as exc:
+        except (IMAP_TRANSPORT_ERROR, OSError) as exc:
             pending_error = exc
             raise EmailFetchError(f"Failed to fetch emails from IMAP folders: {folder_selection}.") from exc
         finally:
             if mail is not None:
                 try:
                     mail.logout()
-                except (imaplib.IMAP4.error, OSError) as exc:
+                except (IMAP_TRANSPORT_ERROR, OSError) as exc:
                     if pending_error is None:
-                        raise EmailFetchError("Failed to close the IMAP mailbox session.") from exc
+                        raise EmailFetchError(CLOSE_SESSION_ERROR_MESSAGE) from exc

@@ -30,6 +30,16 @@ Status: `200 OK`
   "total_fetched": 12,
   "total_normalized": 12,
   "total_deduped": 9,
+  "folders": {
+    "INBOX": {
+      "sync_mode": "incremental",
+      "message_count": 42,
+      "uidvalidity": 999,
+      "uidnext": 143
+    }
+  },
+  "reconciled_missing": 1,
+  "deleted_stale_documents": 1,
   "persisted": [
     {
       "fingerprint": "f4c46f0d...",
@@ -46,6 +56,9 @@ Response fields:
 - `total_fetched`: Raw email count returned from IMAP across all requested folders.
 - `total_normalized`: Number of emails successfully normalized into the canonical persistence shape.
 - `total_deduped`: Count after duplicate-collapse by fingerprint.
+- `folders`: Per-folder sync summary including whether the run used a full scan or resumed incrementally from a stored UID cursor.
+- `reconciled_missing`: Count of previously tracked folder memberships that were no longer present on the IMAP server during this run.
+- `deleted_stale_documents`: Count of email documents removed because they no longer belonged to any tracked folder after reconciliation.
 - `persisted`: Per-document persistence results from the PostgreSQL vector store.
 
 ## Runtime Flow
@@ -55,23 +68,26 @@ The endpoint performs the following steps:
 1. Parse and validate the HTTP query parameters.
 2. Resolve the effective IMAP folder list.
 3. Open an IMAP session with `EmailService`.
-4. Fetch messages from each requested folder within the requested lookback window.
-5. Normalize each message using `EmailNormalizer`.
-6. Merge duplicates while preserving folder provenance.
-7. Generate embeddings from each normalized `searchable_text` value.
-8. Persist metadata and embeddings through `PostgresEmailVectorStore`.
-9. Record a sync run observation for each persisted document.
-10. Update mailbox-level sync state for each scanned IMAP folder.
-11. Return a JSON summary of the ingestion run.
+4. Inspect each requested folder for current `UIDVALIDITY`, `UIDNEXT`, and server UID membership.
+5. Resume from the stored UID cursor when possible; otherwise fall back to the requested lookback window.
+6. Normalize each message using `EmailNormalizer`.
+7. Merge duplicates while preserving folder provenance and current folder UID mappings.
+8. Generate embeddings from each normalized `searchable_text` value.
+9. Persist metadata and embeddings through `PostgresEmailVectorStore`.
+10. Record a sync run observation for each persisted document.
+11. Reconcile previously tracked folder memberships that disappeared from the IMAP server.
+12. Update mailbox-level sync state for each scanned IMAP folder.
+13. Delete email documents that no longer belong to any tracked folder.
+14. Return a JSON summary of the ingestion run.
 
 The implementation intentionally builds the embedding provider and vector store lazily inside the ingestion path. This keeps `function_app.py` import-safe for local development and tests when `DATABASE_URL` is not configured, while still enforcing the requirement when `/api/scan-mail` is invoked.
 
-The email store now also records additive sync-state tables in PostgreSQL:
+The email store now also records mailbox sync-state tables in PostgreSQL:
 
 - `mailbox_sync_state`: one row per observed IMAP folder and sync run frontier.
-- `document_sync_runs`: one row per persisted document observed in a specific sync run.
+- `document_sync_runs`: one row per persisted document observed in a specific sync run, including folder UID details.
 
-This is instrumentation for canonical mailbox state and future reconciliation. It does not yet implement full UID-based incremental sync or soft-delete cleanup.
+This now powers cursor-based incremental sync, folder-membership reconciliation, and stale email cleanup for the HTTP ingestion path.
 
 ## Environment Requirements
 
@@ -82,6 +98,7 @@ The scan-mail endpoint depends on the following environment variables:
 - `IMAP_HOST`: Optional IMAP hostname. Defaults to `imap.mail.me.com`.
 - `IMAP_PORT`: Optional IMAP port. Defaults to `993`.
 - `IMAP_FOLDERS`: Optional default comma-separated IMAP folder list.
+- `IMAP_INCREMENTAL_SYNC`: Optional toggle for UID-based incremental sync. Defaults to `true`.
 - `DATABASE_URL`: Required PostgreSQL connection string for vector persistence.
 - `EMBEDDING_PROVIDER`: Optional embedding provider identifier.
 - `EMBEDDING_BASE_URL`: Optional provider base URL.
@@ -149,9 +166,11 @@ Important invariants:
 - Duplicate messages across multiple folders collapse into one persisted document.
 - `metadata.folders` preserves all observed folders in order.
 - `metadata.folder` remains the compatibility alias for the first observed folder.
+- `metadata.folder_uids` stores the current IMAP UID for each observed folder when the server provides one.
 - Re-running the same mailbox window is intended to be idempotent within the same provider-model space.
 - Each ingestion run records document observations and mailbox-level sync timestamps in PostgreSQL.
-- Full IMAP UID tracking, expunge handling, and stale-document cleanup are not implemented yet.
+- Folder memberships that disappear from IMAP are removed from persisted metadata during reconciliation.
+- Email documents with no remaining tracked folders are deleted along with their embeddings.
 
 ## Local Verification
 

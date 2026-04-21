@@ -1,11 +1,16 @@
-"""Unit tests for IMAP connection behavior."""
+"""Unit tests for IMAP connection behavior and folder state inspection."""
 
 import imaplib
 from email.message import EmailMessage
 import unittest
 from unittest.mock import Mock, patch
 
-from baldwin.email import DEFAULT_IMAP_FOLDER, EmailFetchError, EmailService, MailboxFolders
+from baldwin.email import (
+    DEFAULT_IMAP_FOLDER,
+    EmailFetchError,
+    EmailService,
+    MailboxFolders,
+)
 
 
 class EmailServiceConnectionTests(unittest.TestCase):
@@ -15,8 +20,13 @@ class EmailServiceConnectionTests(unittest.TestCase):
     def test_connect_mailbox_uses_ssl_for_port_993(self, imap4_ssl: Mock) -> None:
         """Port 993 should use implicit SSL."""
         mail = Mock()
-        mail.select.return_value = ("OK", [b""])
+        mail.select.return_value = ("OK", [b"0"])
         mail.search.return_value = ("OK", [b""])
+        mail.uid.return_value = ("OK", [b""])
+        mail.response.side_effect = [
+            (b"UIDVALIDITY", [b"999"]),
+            (b"UIDNEXT", [b"1"]),
+        ]
         imap4_ssl.return_value = mail
         service = EmailService(
             "user@example.com",
@@ -87,8 +97,18 @@ class EmailServiceConnectionTests(unittest.TestCase):
         second_message.set_content("Archive body")
 
         mail = Mock()
-        mail.select.side_effect = [("OK", [b""]), ("OK", [b""])]
+        mail.select.side_effect = [("OK", [b"1"]), ("OK", [b"1"])]
         mail.search.side_effect = [("OK", [b"1"]), ("OK", [b"2"])]
+        mail.uid.side_effect = [
+            ("OK", [b"101"]),
+            ("OK", [b"202"]),
+        ]
+        mail.response.side_effect = [
+            (b"UIDVALIDITY", [b"999"]),
+            (b"UIDNEXT", [b"102"]),
+            (b"UIDVALIDITY", [b"1000"]),
+            (b"UIDNEXT", [b"203"]),
+        ]
         mail.fetch.side_effect = [
             ("OK", [(b"1", first_message.as_bytes())]),
             ("OK", [(b"2", second_message.as_bytes())]),
@@ -109,6 +129,57 @@ class EmailServiceConnectionTests(unittest.TestCase):
         self.assertEqual(mail.select.call_args_list[1].args[0], "Archive")
         mail.logout.assert_called_once_with()
 
+    @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
+    def test_get_folder_status_returns_uid_state(self, imap4_ssl: Mock) -> None:
+        """Folder inspection should expose UIDVALIDITY, UIDNEXT, and current UID membership."""
+        mail = Mock()
+        mail.select.return_value = ("OK", [b"2"])
+        mail.uid.return_value = ("OK", [b"101 102"])
+        mail.response.side_effect = [
+            (b"UIDVALIDITY", [b"999"]),
+            (b"UIDNEXT", [b"103"]),
+        ]
+        imap4_ssl.return_value = mail
+        service = EmailService("user@example.com", "password")
+
+        status = service.get_folder_status("INBOX")
+
+        self.assertEqual(status.folder, "INBOX")
+        self.assertEqual(status.message_count, 2)
+        self.assertEqual(status.uidvalidity, 999)
+        self.assertEqual(status.uidnext, 103)
+        self.assertEqual(status.uids, (101, 102))
+
+    @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
+    def test_fetch_emails_by_uid_range_sets_imap_uid_on_messages(self, imap4_ssl: Mock) -> None:
+        """UID-based fetch should preserve the server UID on parsed email payloads."""
+        message = EmailMessage()
+        message["Message-ID"] = "<message-1@example.com>"
+        message["Subject"] = "Inbox subject"
+        message["From"] = "sender@example.com"
+        message["Date"] = "Fri, 11 Apr 2026 09:15:00 +0000"
+        message.set_content("Inbox body")
+
+        mail = Mock()
+        mail.select.return_value = ("OK", [b"1"])
+        mail.uid.side_effect = [
+            ("OK", [b"101"]),
+            ("OK", [b"101"]),
+            ("OK", [(b"101", message.as_bytes())]),
+        ]
+        mail.response.side_effect = [
+            (b"UIDVALIDITY", [b"999"]),
+            (b"UIDNEXT", [b"102"]),
+        ]
+        imap4_ssl.return_value = mail
+        service = EmailService("user@example.com", "password")
+
+        result = service.fetch_emails_by_uid_range("INBOX", 101, 101)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].imap_uid, 101)
+        self.assertEqual(result[0].folder, "INBOX")
+
     @patch("baldwin.email.email_service.EmailService._create_tls_context")
     @patch("baldwin.email.email_service.imaplib.IMAP4")
     def test_connect_mailbox_uses_starttls_for_non_ssl_ports(
@@ -120,8 +191,13 @@ class EmailServiceConnectionTests(unittest.TestCase):
         context = object()
         create_tls_context.return_value = context
         mail = Mock()
-        mail.select.return_value = ("OK", [b""])
+        mail.select.return_value = ("OK", [b"0"])
         mail.search.return_value = ("OK", [b""])
+        mail.uid.return_value = ("OK", [b""])
+        mail.response.side_effect = [
+            (b"UIDVALIDITY", [b"999"]),
+            (b"UIDNEXT", [b"1"]),
+        ]
         imap4.return_value = mail
 
         service = EmailService(

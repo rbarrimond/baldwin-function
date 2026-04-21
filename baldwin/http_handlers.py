@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import smtplib
-from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.message import EmailMessage
@@ -155,6 +154,102 @@ class EmailIngestionService:
         """Create the configured embedding provider on demand."""
         return build_embedding_provider(load_embedding_settings())
 
+    def _incremental_sync_enabled(self) -> bool:
+        return (
+            str(self.settings.get("IMAP_INCREMENTAL_SYNC", "true")).strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
+
+    @staticmethod
+    def _fetch_folder_payloads(
+        *,
+        email_service: EmailService,
+        vector_store: PostgresEmailVectorStore,
+        folders: MailboxFolders,
+        days: int,
+        incremental_sync_enabled: bool,
+    ) -> tuple[list[Any], dict[str, Any], dict[str, str]]:
+        folder_statuses = {
+            folder_name: email_service.get_folder_status(folder_name)
+            for folder_name in folders.folders
+        }
+        emails: list[Any] = []
+        sync_modes: dict[str, str] = {}
+
+        for folder_name in folders.folders:
+            folder_status = folder_statuses[folder_name]
+            stored_state = vector_store.get_mailbox_sync_state(
+                imap_user=email_service.imap_user,
+                imap_host=email_service.imap_host,
+                imap_folder=folder_name,
+            )
+            last_synced_uid = (
+                int(stored_state["last_synced_uid"])
+                if stored_state is not None and stored_state.get("last_synced_uid") is not None
+                else None
+            )
+            has_valid_cursor = (
+                incremental_sync_enabled
+                and stored_state is not None
+                and stored_state.get("uidvalidity") == folder_status.uidvalidity
+                and last_synced_uid is not None
+            )
+
+            if has_valid_cursor:
+                sync_modes[folder_name] = "incremental"
+                assert last_synced_uid is not None
+                if folder_status.uidnext is not None and last_synced_uid + 1 < folder_status.uidnext:
+                    emails.extend(
+                        email_service.fetch_emails_by_uid_range(
+                            folder_name,
+                            start_uid=last_synced_uid + 1,
+                            end_uid=folder_status.uidnext - 1,
+                        )
+                    )
+                continue
+
+            sync_modes[folder_name] = "full"
+            emails.extend(email_service.fetch_emails(days, MailboxFolders((folder_name,))))
+
+        return emails, folder_statuses, sync_modes
+
+    @staticmethod
+    def _reconcile_folder_membership(
+        *,
+        vector_store: PostgresEmailVectorStore,
+        folders: MailboxFolders,
+        folder_statuses: dict[str, Any],
+        sync_modes: dict[str, str],
+        sync_run_id: str,
+        observed_at: datetime,
+    ) -> int:
+        reconciled_missing = 0
+        for folder_name in folders.folders:
+            folder_status = folder_statuses[folder_name]
+            if sync_modes[folder_name] != "incremental" and folder_status.uidvalidity == 0:
+                continue
+
+            previous_folder_uids = vector_store.get_current_folder_uids(folder_name=folder_name)
+            current_folder_uids = set(folder_status.uids)
+            for document_key, persisted_uid in previous_folder_uids.items():
+                if persisted_uid in current_folder_uids:
+                    continue
+                vector_store.record_document_sync(
+                    document_key=document_key,
+                    sync_run_id=sync_run_id,
+                    folder_names=[folder_name],
+                    folder_uids={folder_name: persisted_uid},
+                    last_seen_at=observed_at,
+                    was_present_in_mailbox=False,
+                )
+                vector_store.remove_folder_membership(
+                    document_key=document_key,
+                    folder_name=folder_name,
+                )
+                reconciled_missing += 1
+
+        return reconciled_missing
+
     def ingest_mailbox(self, days: int, folders: MailboxFolders) -> dict[str, Any]:
         """Fetch, normalize, deduplicate, embed, and persist mailbox messages."""
         sync_run_id = str(uuid4())
@@ -166,12 +261,19 @@ class EmailIngestionService:
             or "imap.mail.me.com",
             imap_port=self.settings.get_int("IMAP_PORT", 993),
         )
-        emails = email_service.fetch_emails(days, folders)
+        vector_store = self._build_vector_store()
+        self._ensure_store_schema(vector_store)
+        emails, folder_statuses, sync_modes = self._fetch_folder_payloads(
+            email_service=email_service,
+            vector_store=vector_store,
+            folders=folders,
+            days=days,
+            incremental_sync_enabled=self._incremental_sync_enabled(),
+        )
+
         normalized = [self.normalizer.normalize(email_message) for email_message in emails]
         deduped = self.normalizer.merge_duplicates(normalized)
         embedding_provider = self._build_embedding_provider()
-        vector_store = self._build_vector_store()
-        self._ensure_store_schema(vector_store)
         embeddings = embedding_provider.embed_texts(
             [email_message.searchable_text for email_message in deduped]
         )
@@ -183,6 +285,7 @@ class EmailIngestionService:
                 document_key=normalized_email.fingerprint,
                 sync_run_id=sync_run_id,
                 folder_names=normalized_email.folders,
+                folder_uids=normalized_email.folder_uids,
                 last_seen_at=observed_at,
             )
             persisted.append(
@@ -194,21 +297,45 @@ class EmailIngestionService:
                 }
             )
 
-        folder_counts = Counter(email_message.folder or DEFAULT_IMAP_FOLDER for email_message in emails)
+        reconciled_missing = self._reconcile_folder_membership(
+            vector_store=vector_store,
+            folders=folders,
+            folder_statuses=folder_statuses,
+            sync_modes=sync_modes,
+            sync_run_id=sync_run_id,
+            observed_at=observed_at,
+        )
+
         for folder_name in folders.folders:
+            folder_status = folder_statuses[folder_name]
             vector_store.upsert_mailbox_sync_state(
                 imap_user=email_service.imap_user,
                 imap_host=email_service.imap_host,
                 imap_folder=folder_name,
                 sync_run_id=sync_run_id,
-                total_emails_in_folder=folder_counts.get(folder_name, 0),
+                total_emails_in_folder=folder_status.message_count,
+                uidvalidity=folder_status.uidvalidity,
+                last_synced_uid=max(folder_status.uids) if folder_status.uids else None,
                 synced_at=observed_at,
             )
+
+        deleted_stale_documents = vector_store.delete_documents_without_folders()
 
         return {
             "total_fetched": len(emails),
             "total_normalized": len(normalized),
             "total_deduped": len(deduped),
+            "folders": {
+                folder_name: {
+                    "sync_mode": sync_modes[folder_name],
+                    "message_count": folder_statuses[folder_name].message_count,
+                    "uidvalidity": folder_statuses[folder_name].uidvalidity,
+                    "uidnext": folder_statuses[folder_name].uidnext,
+                }
+                for folder_name in folders.folders
+            },
+            "reconciled_missing": reconciled_missing,
+            "deleted_stale_documents": deleted_stale_documents,
             "persisted": persisted,
         }
 

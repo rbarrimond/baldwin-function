@@ -53,6 +53,7 @@ These should be set via `app_settings` in Terraform or `local.settings.json` for
 - `IMAP_HOST` (optional, defaults to `imap.mail.me.com`)
 - `IMAP_PORT` (optional, defaults to `993`)
 - `IMAP_FOLDERS` (optional, comma-separated default IMAP folder list; defaults to `INBOX`)
+- `IMAP_INCREMENTAL_SYNC` (optional, defaults to `true`; resumes from stored IMAP UID cursors when possible)
 - `DATABASE_URL` (required when invoking `/api/scan-mail` or the mailbox vectorization script)
 - `SMTP_SERVER`
 - `SMTP_PORT`
@@ -106,7 +107,7 @@ python scripts/vectorize_mailbox.py --days 1 --folder INBOX --folder Archive --d
 
 The legacy `scripts/vectorize_inbox.py` entrypoint remains as a compatibility shim.
 
-Endpoint-specific ingestion details live in `docs/SCAN_MAIL.md`.
+Endpoint-specific ingestion details live in `docs/SCAN_MAIL.md`, including the mailbox cursor and reconciliation behavior used by `/api/scan-mail`.
 
 Schema and storage details live in `docs/EMAIL_VECTORIZATION.md`.
 

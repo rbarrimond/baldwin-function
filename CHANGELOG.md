@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.3 - 2026-04-21
+
+- Added IMAP folder-state inspection and UID-range fetching so `scan-mail` can resume from persisted mailbox cursors instead of re-reading the same folder window on every run.
+- Persisted current folder-to-UID state in email metadata, reconciled missing folder memberships after each sync, and deleted email documents that no longer belong to any tracked folder.
+- Expanded regression coverage for IMAP folder status, UID-based fetch, reconciliation, and the new email metadata shape.
+
 ## 0.5.2 - 2026-04-20
 
 - Added additive PostgreSQL sync-state tables for `scan-mail` so each ingestion run now records per-folder mailbox state and per-document observation rows.

@@ -34,6 +34,7 @@ class EmailNormalizerTests(unittest.TestCase):
         self.assertEqual(normalized.source_message_id, "<message-123@example.com>")
         self.assertEqual(normalized.recipients, ["recipient@example.com"])
         self.assertEqual(normalized.folders, [])
+        self.assertEqual(normalized.folder_uids, {})
         self.assertIn("Subject", normalized.searchable_text)
         self.assertIn("First line Second line", normalized.searchable_text)
 
@@ -112,6 +113,7 @@ class EmailNormalizerTests(unittest.TestCase):
                 body="Body text",
                 headers={"Message-ID": "<message-123@example.com>"},
                 folder="INBOX",
+                imap_uid=101,
             )
         )
         archive_email = normalizer.normalize(
@@ -127,6 +129,7 @@ class EmailNormalizerTests(unittest.TestCase):
                 body="Body text",
                 headers={"Message-ID": "<message-123@example.com>"},
                 folder="Archive",
+                imap_uid=202,
             )
         )
 
@@ -134,6 +137,7 @@ class EmailNormalizerTests(unittest.TestCase):
 
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0].folders, ["INBOX", "Archive"])
+        self.assertEqual(merged[0].folder_uids, {"INBOX": 101, "Archive": 202})
 
     def test_merge_duplicates_raises_email_normalization_error_on_checksum_conflict(self) -> None:
         """Checksum conflicts should raise a Baldwin normalization error with context."""
@@ -223,6 +227,7 @@ class PostgresEmailVectorStoreTests(unittest.TestCase):
         self.assertEqual(document.metadata["sender"], "sender@example.com")
         self.assertEqual(document.metadata["folder"], "Archive")
         self.assertEqual(document.metadata["folders"], ["Archive"])
+        self.assertEqual(document.metadata["folder_uids"], {})
         self.assertEqual(
             document.metadata["recipients"],
             ["recipient@example.com", "cc@example.com", "reply@example.com"],
