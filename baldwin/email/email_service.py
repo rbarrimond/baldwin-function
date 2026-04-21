@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from baldwin.exceptions import EmailFetchError
 
 DEFAULT_IMAP_FOLDER = "INBOX"
-IMAP_TRANSPORT_ERROR = imaplib.IMAP4.error
+IMAP_TRANSPORT_ERROR = imaplib.IMAP4.error # pylint: disable=C0103
 CLOSE_SESSION_ERROR_MESSAGE = "Failed to close the IMAP mailbox session."
 
 
