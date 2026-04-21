@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from typing import Any
 
+import psycopg
+from psycopg import sql
+
 from baldwin.embedding import EmbeddingResult
+from baldwin.exceptions import VectorStoreError
 from baldwin.vector.postgres_store import (
     PostgresVectorStore,
     VectorDocument,
@@ -24,6 +30,52 @@ class PostgresEmailVectorStore(PostgresVectorStore):
             document_table="vector_documents",
             embedding_table="vector_embeddings",
         )
+
+    def bootstrap(self) -> None:
+        """Create the generic vector schema plus email sync tracking tables."""
+        super().bootstrap()
+
+        try:
+            with psycopg.connect(self.database_url, autocommit=True) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS mailbox_sync_state (
+                            id BIGSERIAL PRIMARY KEY,
+                            imap_user TEXT NOT NULL,
+                            imap_host TEXT NOT NULL,
+                            imap_folder TEXT NOT NULL,
+                            uidvalidity BIGINT NOT NULL DEFAULT 0,
+                            last_synced_uid BIGINT,
+                            last_sync_time TIMESTAMPTZ NOT NULL,
+                            sync_run_id UUID NOT NULL,
+                            total_emails_in_folder BIGINT NOT NULL DEFAULT 0,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            UNIQUE (imap_user, imap_host, imap_folder, uidvalidity)
+                        )
+                        """
+                    )
+                    cursor.execute(
+                        sql.SQL(
+                            """
+                            CREATE TABLE IF NOT EXISTS {sync_runs_table} (
+                                document_id BIGINT NOT NULL REFERENCES {document_table}(id) ON DELETE CASCADE,
+                                sync_run_id UUID NOT NULL,
+                                was_present_in_mailbox BOOLEAN NOT NULL DEFAULT TRUE,
+                                folder_names JSONB NOT NULL DEFAULT '[]'::jsonb,
+                                last_seen_at TIMESTAMPTZ NOT NULL,
+                                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                                PRIMARY KEY (document_id, sync_run_id)
+                            )
+                            """
+                        ).format(
+                            sync_runs_table=sql.Identifier("document_sync_runs"),
+                            document_table=sql.Identifier(self.document_table),
+                        )
+                    )
+        except psycopg.Error as exc:
+            raise VectorStoreError("Failed to bootstrap PostgreSQL email sync state.") from exc
 
     @staticmethod
     def to_document(normalized_email: NormalizedEmail) -> VectorDocument:
@@ -55,3 +107,128 @@ class PostgresEmailVectorStore(PostgresVectorStore):
     ) -> VectorStoreResult:
         """Upsert an email by delegating to the generic document store."""
         return self.upsert_document(self.to_document(normalized_email), embedding)
+
+    def upsert_mailbox_sync_state(
+        self,
+        *,
+        imap_user: str,
+        imap_host: str,
+        imap_folder: str,
+        sync_run_id: str,
+        total_emails_in_folder: int,
+        uidvalidity: int = 0,
+        last_synced_uid: int | None = None,
+        synced_at: datetime | None = None,
+    ) -> None:
+        """Record the latest observed sync state for an IMAP folder."""
+        observed_at = synced_at or datetime.now(UTC)
+
+        try:
+            with psycopg.connect(self.database_url) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        INSERT INTO mailbox_sync_state (
+                            imap_user,
+                            imap_host,
+                            imap_folder,
+                            uidvalidity,
+                            last_synced_uid,
+                            last_sync_time,
+                            sync_run_id,
+                            total_emails_in_folder
+                        )
+                        VALUES (
+                            %(imap_user)s,
+                            %(imap_host)s,
+                            %(imap_folder)s,
+                            %(uidvalidity)s,
+                            %(last_synced_uid)s,
+                            %(last_sync_time)s,
+                            %(sync_run_id)s,
+                            %(total_emails_in_folder)s
+                        )
+                        ON CONFLICT (imap_user, imap_host, imap_folder, uidvalidity) DO UPDATE SET
+                            last_synced_uid = EXCLUDED.last_synced_uid,
+                            last_sync_time = EXCLUDED.last_sync_time,
+                            sync_run_id = EXCLUDED.sync_run_id,
+                            total_emails_in_folder = EXCLUDED.total_emails_in_folder,
+                            updated_at = NOW()
+                        """,
+                        {
+                            "imap_user": imap_user,
+                            "imap_host": imap_host,
+                            "imap_folder": imap_folder,
+                            "uidvalidity": uidvalidity,
+                            "last_synced_uid": last_synced_uid,
+                            "last_sync_time": observed_at,
+                            "sync_run_id": sync_run_id,
+                            "total_emails_in_folder": total_emails_in_folder,
+                        },
+                    )
+
+                connection.commit()
+        except psycopg.Error as exc:
+            raise VectorStoreError("Failed to persist mailbox sync state.") from exc
+
+    def record_document_sync(
+        self,
+        *,
+        document_key: str,
+        sync_run_id: str,
+        folder_names: list[str],
+        last_seen_at: datetime | None = None,
+        was_present_in_mailbox: bool = True,
+    ) -> None:
+        """Record that a persisted document was observed in a specific sync run."""
+        observed_at = last_seen_at or datetime.now(UTC)
+
+        try:
+            with psycopg.connect(self.database_url) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        sql.SQL(
+                            "SELECT id FROM {document_table} WHERE document_key = %(document_key)s"
+                        ).format(document_table=sql.Identifier(self.document_table)),
+                        {"document_key": document_key},
+                    )
+                    row = cursor.fetchone()
+                    if row is None:
+                        raise VectorStoreError(
+                            f"Unable to record sync state for unknown document_key {document_key!r}."
+                        )
+
+                    document_id = row[0]
+                    cursor.execute(
+                        """
+                        INSERT INTO document_sync_runs (
+                            document_id,
+                            sync_run_id,
+                            was_present_in_mailbox,
+                            folder_names,
+                            last_seen_at
+                        )
+                        VALUES (
+                            %(document_id)s,
+                            %(sync_run_id)s,
+                            %(was_present_in_mailbox)s,
+                            %(folder_names)s::jsonb,
+                            %(last_seen_at)s
+                        )
+                        ON CONFLICT (document_id, sync_run_id) DO UPDATE SET
+                            was_present_in_mailbox = EXCLUDED.was_present_in_mailbox,
+                            folder_names = EXCLUDED.folder_names,
+                            last_seen_at = EXCLUDED.last_seen_at
+                        """,
+                        {
+                            "document_id": document_id,
+                            "sync_run_id": sync_run_id,
+                            "was_present_in_mailbox": was_present_in_mailbox,
+                            "folder_names": json.dumps(folder_names),
+                            "last_seen_at": observed_at,
+                        },
+                    )
+
+                connection.commit()
+        except psycopg.Error as exc:
+            raise VectorStoreError("Failed to record document sync observation.") from exc

@@ -60,9 +60,18 @@ The endpoint performs the following steps:
 6. Merge duplicates while preserving folder provenance.
 7. Generate embeddings from each normalized `searchable_text` value.
 8. Persist metadata and embeddings through `PostgresEmailVectorStore`.
-9. Return a JSON summary of the ingestion run.
+9. Record a sync run observation for each persisted document.
+10. Update mailbox-level sync state for each scanned IMAP folder.
+11. Return a JSON summary of the ingestion run.
 
 The implementation intentionally builds the embedding provider and vector store lazily inside the ingestion path. This keeps `function_app.py` import-safe for local development and tests when `DATABASE_URL` is not configured, while still enforcing the requirement when `/api/scan-mail` is invoked.
+
+The email store now also records additive sync-state tables in PostgreSQL:
+
+- `mailbox_sync_state`: one row per observed IMAP folder and sync run frontier.
+- `document_sync_runs`: one row per persisted document observed in a specific sync run.
+
+This is instrumentation for canonical mailbox state and future reconciliation. It does not yet implement full UID-based incremental sync or soft-delete cleanup.
 
 ## Environment Requirements
 
@@ -133,7 +142,7 @@ The implementation deliberately avoids leaking raw infrastructure errors through
 
 ## Persistence Notes
 
-The scan-mail endpoint persists to the same generic vector schema documented in [docs/EMAIL_VECTORIZATION.md](docs/EMAIL_VECTORIZATION.md).
+The scan-mail endpoint persists to the same generic vector schema documented in [docs/EMAIL_VECTORIZATION.md](docs/EMAIL_VECTORIZATION.md), plus additive sync-state tables for mailbox observation tracking.
 
 Important invariants:
 
@@ -141,6 +150,8 @@ Important invariants:
 - `metadata.folders` preserves all observed folders in order.
 - `metadata.folder` remains the compatibility alias for the first observed folder.
 - Re-running the same mailbox window is intended to be idempotent within the same provider-model space.
+- Each ingestion run records document observations and mailbox-level sync timestamps in PostgreSQL.
+- Full IMAP UID tracking, expunge handling, and stale-document cleanup are not implemented yet.
 
 ## Local Verification
 

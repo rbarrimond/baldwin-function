@@ -4,6 +4,8 @@ This repository can fetch messages from one or more IMAP folders, normalize them
 
 The persistence layer now uses a generic vector-document store with an email-specific adapter layered on top. The email adapter maps normalized emails into generic vector documents before delegating to PostgreSQL storage.
 
+The email adapter now also supports additive sync-state instrumentation for mailbox runs through `mailbox_sync_state` and `document_sync_runs`, while the core vector document and embedding tables remain the content source of truth.
+
 ## Scope
 
 - The first implementation is a manual script.
@@ -60,11 +62,38 @@ The script accepts the following settings:
 - `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 - `PRIMARY KEY (document_id, provider, model_name)`
 
+### `mailbox_sync_state`
+
+- `id BIGSERIAL PRIMARY KEY`
+- `imap_user TEXT NOT NULL`
+- `imap_host TEXT NOT NULL`
+- `imap_folder TEXT NOT NULL`
+- `uidvalidity BIGINT NOT NULL DEFAULT 0`: placeholder frontier value until true IMAP UID sync is implemented.
+- `last_synced_uid BIGINT NULL`: reserved for future incremental sync support.
+- `last_sync_time TIMESTAMPTZ NOT NULL`
+- `sync_run_id UUID NOT NULL`
+- `total_emails_in_folder BIGINT NOT NULL DEFAULT 0`
+- `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
+- `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
+- `UNIQUE (imap_user, imap_host, imap_folder, uidvalidity)`
+
+### `document_sync_runs`
+
+- `document_id BIGINT NOT NULL REFERENCES vector_documents(id) ON DELETE CASCADE`
+- `sync_run_id UUID NOT NULL`
+- `was_present_in_mailbox BOOLEAN NOT NULL DEFAULT TRUE`
+- `folder_names JSONB NOT NULL DEFAULT '[]'::jsonb`
+- `last_seen_at TIMESTAMPTZ NOT NULL`
+- `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
+- `PRIMARY KEY (document_id, sync_run_id)`
+
 ## Deduplication
 
 The email adapter prefers `Message-ID` when it is present. If the upstream message does not provide one, the fallback fingerprint is computed from sender, date, subject, and normalized text content. Re-running the script against the same mailbox-folder window is expected to be idempotent within the same provider-model space, while still allowing additional embeddings to be stored for other providers or models.
 
 When the same message appears in multiple scanned folders, the mailbox vectorization runtime collapses those duplicates into one persisted document and stores folder provenance in `metadata.folders`, while `metadata.folder` preserves the first folder as a compatibility alias.
+
+Each ingestion run also records which persisted documents were observed and when each scanned folder was last seen. This is the first step toward a fuller IMAP sync model, but it does not yet reconcile deleted or moved messages.
 
 ## Long Email Embeddings
 

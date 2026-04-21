@@ -8,9 +8,12 @@ import logging
 import os
 import re
 import smtplib
+from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from typing import Any, Mapping
+from uuid import uuid4
 
 from azure.functions import HttpRequest, HttpResponse
 
@@ -134,10 +137,18 @@ class EmailIngestionService:
     def __init__(self, settings: EnvironmentSettings):
         self.settings = settings
         self.normalizer = EmailNormalizer()
+        self._schema_ready = False
 
     def _build_vector_store(self) -> PostgresEmailVectorStore:
         """Create the vector store from the current environment settings."""
         return PostgresEmailVectorStore(self.settings.get_required("DATABASE_URL"))
+
+    def _ensure_store_schema(self, vector_store: PostgresEmailVectorStore) -> None:
+        """Create required persistence schema once per process lifecycle."""
+        if self._schema_ready:
+            return
+        vector_store.bootstrap()
+        self._schema_ready = True
 
     @staticmethod
     def _build_embedding_provider() -> Any:
@@ -146,6 +157,8 @@ class EmailIngestionService:
 
     def ingest_mailbox(self, days: int, folders: MailboxFolders) -> dict[str, Any]:
         """Fetch, normalize, deduplicate, embed, and persist mailbox messages."""
+        sync_run_id = str(uuid4())
+        observed_at = datetime.now(UTC)
         email_service = EmailService(
             self.settings.get_required("IMAP_USER"),
             self.settings.get_required("IMAP_PASSWORD"),
@@ -158,6 +171,7 @@ class EmailIngestionService:
         deduped = self.normalizer.merge_duplicates(normalized)
         embedding_provider = self._build_embedding_provider()
         vector_store = self._build_vector_store()
+        self._ensure_store_schema(vector_store)
         embeddings = embedding_provider.embed_texts(
             [email_message.searchable_text for email_message in deduped]
         )
@@ -165,6 +179,12 @@ class EmailIngestionService:
         persisted: list[dict[str, Any]] = []
         for normalized_email, embedding in zip(deduped, embeddings):
             store_result = vector_store.upsert_email(normalized_email, embedding)
+            vector_store.record_document_sync(
+                document_key=normalized_email.fingerprint,
+                sync_run_id=sync_run_id,
+                folder_names=normalized_email.folders,
+                last_seen_at=observed_at,
+            )
             persisted.append(
                 {
                     "fingerprint": normalized_email.fingerprint,
@@ -172,6 +192,17 @@ class EmailIngestionService:
                     "inserted": store_result.inserted,
                     "embedding_updated": store_result.embedding_updated,
                 }
+            )
+
+        folder_counts = Counter(email_message.folder or DEFAULT_IMAP_FOLDER for email_message in emails)
+        for folder_name in folders.folders:
+            vector_store.upsert_mailbox_sync_state(
+                imap_user=email_service.imap_user,
+                imap_host=email_service.imap_host,
+                imap_folder=folder_name,
+                sync_run_id=sync_run_id,
+                total_emails_in_folder=folder_counts.get(folder_name, 0),
+                synced_at=observed_at,
             )
 
         return {

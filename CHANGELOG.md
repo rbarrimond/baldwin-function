@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2 - 2026-04-20
+
+- Added additive PostgreSQL sync-state tables for `scan-mail` so each ingestion run now records per-folder mailbox state and per-document observation rows.
+- Wired `EmailIngestionService` to bootstrap the email persistence schema lazily and record sync observations without changing the public HTTP response contract.
+- Updated vectorization and scan-mail docs and added regression coverage for the new email sync instrumentation.
+
 ## 0.5.1 - 2026-04-20
 
 - Rebuilt the HTTP handler module around typed request parsing and consistent response factories after the route layer had drifted into a broken state.
