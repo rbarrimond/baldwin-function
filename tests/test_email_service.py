@@ -261,6 +261,21 @@ class EmailServiceConnectionTests(unittest.TestCase):
 
         self.assertEqual(recipients, ["reply@example.com", "second@example.com"])
 
+    def test_parse_message_normalizes_header_objects_in_headers_map(self) -> None:
+        """Stored header metadata should coerce Header objects into plain strings for the Email model."""
+        message = EmailMessage()
+        message["Message-ID"] = "<message-1@example.com>"
+        message["Subject"] = "Inbox subject"
+        message["From"] = "sender@example.com"
+        message["Date"] = "Fri, 11 Apr 2026 09:15:00 +0000"
+        message["Reply-To"] = Header("reply@example.com", "utf-8")
+        message.set_content("Inbox body")
+
+        parsed = EmailService("user@example.com", "password")._parse_message(message, "INBOX")
+
+        self.assertEqual(parsed.reply_to, ["reply@example.com"])
+        self.assertEqual(parsed.headers["Reply-To"], "reply@example.com")
+
     @patch("baldwin.email.email_service.EmailService._create_tls_context")
     @patch("baldwin.email.email_service.imaplib.IMAP4")
     def test_connect_mailbox_uses_starttls_for_non_ssl_ports(

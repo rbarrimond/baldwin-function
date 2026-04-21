@@ -152,6 +152,13 @@ class EmailService:
         recipients = [address.strip() for address in decoded_value.split(",") if address.strip()]
         return recipients or None
 
+    @classmethod
+    def _normalize_headers(cls, message: Message) -> Dict[str, str]:
+        return {
+            header_name: cls._decode_header_value(header_value)
+            for header_name, header_value in message.items()
+        }
+
     @staticmethod
     def _decode_payload(part: Message) -> str:
         payload = part.get_payload(decode=True)
@@ -270,7 +277,7 @@ class EmailService:
             reply_to=self._split_recipients(message.get("Reply-To")),
             date=message.get("Date", ""),
             body=self._extract_body(message),
-            headers=dict(message.items()),
+            headers=self._normalize_headers(message),
             folder=folder,
             imap_uid=imap_uid,
             imap_flags=None,
