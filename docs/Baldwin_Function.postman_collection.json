@@ -1,0 +1,145 @@
+{
+  "info": {
+    "_postman_id": "2f6a36a1-5d13-44d2-af59-d00dff1d4f1e",
+    "name": "Baldwin Function",
+    "description": "Postman collection for the Baldwin Azure Function HTTP endpoints. Set the collection variable `baseUrl` to your deployed host if you are not running locally.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:7071",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Scan Mail",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/scan-mail?days=1&folders=INBOX,Archive",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "scan-mail"
+          ],
+          "query": [
+            {
+              "key": "days",
+              "value": "1"
+            },
+            {
+              "key": "folders",
+              "value": "INBOX,Archive"
+            }
+          ]
+        },
+        "description": "Ingest recent IMAP emails from one or more folders and persist vectorized documents."
+      },
+      "response": []
+    },
+    {
+      "name": "Summarize Email",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"body\": \"Agenda for tomorrow. Please review the contract.\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/summarize-email",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "summarize-email"
+          ]
+        },
+        "description": "Generate a concise summary from an email body."
+      },
+      "response": []
+    },
+    {
+      "name": "Build Digest",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"summaries\": [\n    \"One\",\n    {\n      \"summary\": \"Two\"\n    }\n  ],\n  \"audience\": \"robert\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/build-digest",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "build-digest"
+          ]
+        },
+        "description": "Build a Markdown digest from a list of summaries."
+      },
+      "response": []
+    },
+    {
+      "name": "Send Digest",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"to\": \"user@example.com\",\n  \"subject\": \"Daily Digest\",\n  \"content\": \"## Daily Digest for Robert\\n\\n- One\\n- Two\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/send-digest",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "send-digest"
+          ]
+        },
+        "description": "Send a prepared digest over SMTP."
+      },
+      "response": []
+    }
+  ]
+}

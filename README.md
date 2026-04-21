@@ -111,6 +111,8 @@ Endpoint-specific ingestion details live in `docs/SCAN_MAIL.md`, including the m
 
 Schema and storage details live in `docs/EMAIL_VECTORIZATION.md`.
 
+A ready-to-import Postman collection for the HTTP endpoints lives at `docs/Baldwin_Function.postman_collection.json`.
+
 ## 📬 Future Features
 
 - Tagging logic (`/tag-email`)
