@@ -45,7 +45,7 @@ The script accepts the following settings:
 - `title TEXT NOT NULL`
 - `body TEXT NOT NULL`
 - `searchable_text TEXT NOT NULL`: normalized text used for vector generation.
-- `metadata JSONB NOT NULL`: email-specific fields such as sender, recipients, raw date, parsed sent timestamp, primary source folder, folder provenance list, current `folder_uids` mapping, and headers.
+- `metadata JSONB NOT NULL`: email-specific fields such as sender, recipients, raw date, parsed sent timestamp, primary source folder, folder provenance list, current `folder_uids` mapping, per-folder IMAP `folder_flags`, per-folder IMAP `folder_keywords`, and headers.
 - `content_checksum TEXT NOT NULL`: checksum used to detect embedding refreshes.
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 - `updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
@@ -88,13 +88,23 @@ The script accepts the following settings:
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
 - `PRIMARY KEY (document_id, sync_run_id)`
 
+## IMAP Flags And Keywords
+
+The email adapter persists IMAP mailbox metadata separately from message content:
+
+- `metadata.folder_flags`: map of folder name to the ordered IMAP flags reported for that folder membership.
+- `metadata.folder_keywords`: map of folder name to the ordered user-defined IMAP keywords reported for that folder membership.
+- Starred mail is represented by the IMAP system flag `\Flagged` inside the relevant `folder_flags` entry.
+
+These fields are additive metadata only. They do not participate in fingerprint computation, duplicate collapse, or embedding refresh detection.
+
 ## Deduplication
 
 The email adapter prefers `Message-ID` when it is present. If the upstream message does not provide one, the fallback fingerprint is computed from sender, date, subject, and normalized text content. Re-running the script against the same mailbox-folder window is expected to be idempotent within the same provider-model space, while still allowing additional embeddings to be stored for other providers or models.
 
-When the same message appears in multiple scanned folders, the mailbox vectorization runtime collapses those duplicates into one persisted document and stores folder provenance in `metadata.folders`, while `metadata.folder` preserves the first folder as a compatibility alias. When the IMAP server provides UIDs, the runtime also tracks the current UID per folder in `metadata.folder_uids`.
+When the same message appears in multiple scanned folders, the mailbox vectorization runtime collapses those duplicates into one persisted document and stores folder provenance in `metadata.folders`, while `metadata.folder` preserves the first folder as a compatibility alias. When the IMAP server provides UIDs, the runtime also tracks the current UID per folder in `metadata.folder_uids`. IMAP flags and keywords are likewise persisted per folder in `metadata.folder_flags` and `metadata.folder_keywords` because the same logical message can have different mailbox state across folders.
 
-Each `scan-mail` ingestion run also records which persisted documents were observed, the current folder UID frontier, and whether previously tracked folder memberships disappeared from the server. If a document no longer belongs to any tracked folder after reconciliation, the email document and its embeddings are deleted.
+Each `scan-mail` ingestion run also records which persisted documents were observed, the current folder UID frontier, and whether previously tracked folder memberships disappeared from the server. If a folder membership disappears, the runtime removes that folder entry from `metadata.folders`, `metadata.folder_uids`, `metadata.folder_flags`, and `metadata.folder_keywords`. If a document no longer belongs to any tracked folder after reconciliation, the email document and its embeddings are deleted.
 
 ## Long Email Embeddings
 

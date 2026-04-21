@@ -72,13 +72,14 @@ The endpoint performs the following steps:
 5. Resume from the stored UID cursor when possible; otherwise fall back to the requested lookback window.
 6. Normalize each message using `EmailNormalizer`.
 7. Merge duplicates while preserving folder provenance and current folder UID mappings.
-8. Generate embeddings from each normalized `searchable_text` value.
-9. Persist metadata and embeddings through `PostgresEmailVectorStore`.
-10. Record a sync run observation for each persisted document.
-11. Reconcile previously tracked folder memberships that disappeared from the IMAP server.
-12. Update mailbox-level sync state for each scanned IMAP folder.
-13. Delete email documents that no longer belong to any tracked folder.
-14. Return a JSON summary of the ingestion run.
+8. Preserve per-folder IMAP flags and keywords for each observed folder membership.
+9. Generate embeddings from each normalized `searchable_text` value.
+10. Persist metadata and embeddings through `PostgresEmailVectorStore`.
+11. Record a sync run observation for each persisted document.
+12. Reconcile previously tracked folder memberships that disappeared from the IMAP server.
+13. Update mailbox-level sync state for each scanned IMAP folder.
+14. Delete email documents that no longer belong to any tracked folder.
+15. Return a JSON summary of the ingestion run.
 
 The implementation intentionally builds the embedding provider and vector store lazily inside the ingestion path. This keeps `function_app.py` import-safe for local development and tests when `DATABASE_URL` is not configured, while still enforcing the requirement when `/api/scan-mail` is invoked.
 
@@ -167,9 +168,12 @@ Important invariants:
 - `metadata.folders` preserves all observed folders in order.
 - `metadata.folder` remains the compatibility alias for the first observed folder.
 - `metadata.folder_uids` stores the current IMAP UID for each observed folder when the server provides one.
+- `metadata.folder_flags` stores the current IMAP flags for each observed folder membership.
+- `metadata.folder_keywords` stores the current user-defined IMAP keywords for each observed folder membership.
+- Starred mail is represented by the IMAP `\Flagged` system flag in the relevant `metadata.folder_flags` entry.
 - Re-running the same mailbox window is intended to be idempotent within the same provider-model space.
 - Each ingestion run records document observations and mailbox-level sync timestamps in PostgreSQL.
-- Folder memberships that disappear from IMAP are removed from persisted metadata during reconciliation.
+- Folder memberships that disappear from IMAP are removed from persisted metadata during reconciliation, including the matching per-folder UID, flags, and keywords.
 - Email documents with no remaining tracked folders are deleted along with their embeddings.
 
 ## Local Verification

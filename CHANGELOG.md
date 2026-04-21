@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.4 - 2026-04-21
+
+- Added IMAP flag and keyword support to mailbox ingestion and persisted the results as per-folder metadata in `vector_documents`.
+- Represented starred mail via the IMAP `\Flagged` system flag while keeping document fingerprints and embedding refresh checks based only on message identity and normalized content.
+- Extended folder-membership reconciliation so stale folders also remove their associated per-folder flags and keywords, and added regression coverage for IMAP flag parsing and metadata cleanup.
+
 ## 0.5.3 - 2026-04-21
 
 - Added IMAP folder-state inspection and UID-range fetching so `scan-mail` can resume from persisted mailbox cursors instead of re-reading the same folder window on every run.

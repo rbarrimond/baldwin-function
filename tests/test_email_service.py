@@ -130,6 +130,41 @@ class EmailServiceConnectionTests(unittest.TestCase):
         mail.logout.assert_called_once_with()
 
     @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
+    def test_fetch_emails_includes_imap_flags_and_keywords(self, imap4_ssl: Mock) -> None:
+        """Body fetches should preserve IMAP system flags and custom keywords on parsed emails."""
+        message = EmailMessage()
+        message["Message-ID"] = "<message-1@example.com>"
+        message["Subject"] = "Inbox subject"
+        message["From"] = "sender@example.com"
+        message["Date"] = "Fri, 11 Apr 2026 09:15:00 +0000"
+        message.set_content("Inbox body")
+
+        mail = Mock()
+        mail.select.return_value = ("OK", [b"1"])
+        mail.search.return_value = ("OK", [b"1"])
+        mail.uid.return_value = ("OK", [b"101"])
+        mail.response.side_effect = [
+            (b"UIDVALIDITY", [b"999"]),
+            (b"UIDNEXT", [b"102"]),
+        ]
+        mail.fetch.return_value = (
+            "OK",
+            [
+                (
+                    b"1 (FLAGS (\\Seen \\Flagged custom-tag) BODY[] {123}",
+                    message.as_bytes(),
+                )
+            ],
+        )
+        imap4_ssl.return_value = mail
+        service = EmailService("user@example.com", "password")
+
+        result = service.fetch_emails(1, MailboxFolders.from_values(["INBOX"]))
+
+        self.assertEqual(result[0].imap_flags, ["\\Seen", "\\Flagged", "custom-tag"])
+        self.assertEqual(result[0].imap_keywords, ["custom-tag"])
+
+    @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
     def test_get_folder_status_returns_uid_state(self, imap4_ssl: Mock) -> None:
         """Folder inspection should expose UIDVALIDITY, UIDNEXT, and current UID membership."""
         mail = Mock()
@@ -179,6 +214,43 @@ class EmailServiceConnectionTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].imap_uid, 101)
         self.assertEqual(result[0].folder, "INBOX")
+
+    @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
+    def test_fetch_emails_by_uid_range_includes_imap_flags_and_keywords(self, imap4_ssl: Mock) -> None:
+        """UID-based fetches should preserve IMAP flags and derived keywords."""
+        message = EmailMessage()
+        message["Message-ID"] = "<message-1@example.com>"
+        message["Subject"] = "Inbox subject"
+        message["From"] = "sender@example.com"
+        message["Date"] = "Fri, 11 Apr 2026 09:15:00 +0000"
+        message.set_content("Inbox body")
+
+        mail = Mock()
+        mail.select.return_value = ("OK", [b"1"])
+        mail.uid.side_effect = [
+            ("OK", [b"101"]),
+            ("OK", [b"101"]),
+            (
+                "OK",
+                [
+                    (
+                        b"101 (FLAGS (\\Seen project-x) BODY[] {123}",
+                        message.as_bytes(),
+                    )
+                ],
+            ),
+        ]
+        mail.response.side_effect = [
+            (b"UIDVALIDITY", [b"999"]),
+            (b"UIDNEXT", [b"102"]),
+        ]
+        imap4_ssl.return_value = mail
+        service = EmailService("user@example.com", "password")
+
+        result = service.fetch_emails_by_uid_range("INBOX", 101, 101)
+
+        self.assertEqual(result[0].imap_flags, ["\\Seen", "project-x"])
+        self.assertEqual(result[0].imap_keywords, ["project-x"])
 
     @patch("baldwin.email.email_service.EmailService._create_tls_context")
     @patch("baldwin.email.email_service.imaplib.IMAP4")

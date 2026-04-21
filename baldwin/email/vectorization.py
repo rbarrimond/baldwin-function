@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from email.utils import parsedate_to_datetime
 
 from baldwin.embedding import HashingEmbeddingProvider
@@ -51,6 +51,8 @@ class NormalizedEmail:
     searchable_text: str
     content_checksum: str
     headers: dict[str, str]
+    folder_flags: dict[str, list[str]] = field(default_factory=dict)
+    folder_keywords: dict[str, list[str]] = field(default_factory=dict)
 
 
 class EmailNormalizer:
@@ -75,6 +77,16 @@ class EmailNormalizer:
                 )
             folder_uids[folder_name] = folder_uid
         return folder_uids
+
+    @staticmethod
+    def _merge_folder_metadata(
+        existing: dict[str, list[str]],
+        candidate: dict[str, list[str]],
+    ) -> dict[str, list[str]]:
+        merged = {folder_name: values.copy() for folder_name, values in existing.items()}
+        for folder_name, values in candidate.items():
+            merged[folder_name] = values.copy()
+        return merged
 
     @staticmethod
     def _build_recipients(email_message: Email) -> list[str]:
@@ -143,6 +155,12 @@ class EmailNormalizer:
             folder_uids={normalized_folder: email_message.imap_uid}
             if normalized_folder and email_message.imap_uid is not None
             else {},
+            folder_flags={normalized_folder: list(email_message.imap_flags or [])}
+            if normalized_folder and email_message.imap_flags
+            else {},
+            folder_keywords={normalized_folder: list(email_message.imap_keywords or [])}
+            if normalized_folder and email_message.imap_keywords
+            else {},
             body=body,
             searchable_text=searchable_text,
             content_checksum=checksum,
@@ -172,6 +190,14 @@ class EmailNormalizer:
                 existing,
                 folders=EmailNormalizer._merge_folders(existing, normalized_email),
                 folder_uids=EmailNormalizer._merge_folder_uids(existing, normalized_email),
+                folder_flags=EmailNormalizer._merge_folder_metadata(
+                    existing.folder_flags,
+                    normalized_email.folder_flags,
+                ),
+                folder_keywords=EmailNormalizer._merge_folder_metadata(
+                    existing.folder_keywords,
+                    normalized_email.folder_keywords,
+                ),
             )
 
         return [merged[fingerprint] for fingerprint in ordered_fingerprints]

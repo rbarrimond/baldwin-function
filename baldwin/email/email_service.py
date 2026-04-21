@@ -3,6 +3,7 @@
 import datetime
 import email
 import imaplib
+import re
 import ssl
 from dataclasses import dataclass
 from email.header import decode_header
@@ -16,6 +17,14 @@ from baldwin.exceptions import EmailFetchError
 DEFAULT_IMAP_FOLDER = "INBOX"
 IMAP_TRANSPORT_ERROR = imaplib.IMAP4.error # pylint: disable=C0103
 CLOSE_SESSION_ERROR_MESSAGE = "Failed to close the IMAP mailbox session."
+_SYSTEM_IMAP_FLAGS = {
+    "\\Answered",
+    "\\Deleted",
+    "\\Draft",
+    "\\Flagged",
+    "\\Recent",
+    "\\Seen",
+}
 
 
 @dataclass(frozen=True)
@@ -83,6 +92,8 @@ class Email(BaseModel):
     headers: Dict[str, str]
     folder: Optional[str] = None
     imap_uid: Optional[int] = None
+    imap_flags: Optional[List[str]] = None
+    imap_keywords: Optional[List[str]] = None
 
 
 class EmailService:
@@ -211,6 +222,39 @@ class EmailService:
                 continue
         return tuple(parsed_values)
 
+    @staticmethod
+    def _deduplicate_ordered(values: Sequence[str]) -> list[str]:
+        ordered: list[str] = []
+        for value in values:
+            if value and value not in ordered:
+                ordered.append(value)
+        return ordered
+
+    @classmethod
+    def _parse_imap_flags(
+        cls,
+        fetch_descriptor: bytes | bytearray | memoryview | str | None,
+    ) -> tuple[list[str], list[str]]:
+        if fetch_descriptor is None:
+            return [], []
+
+        if isinstance(fetch_descriptor, memoryview):
+            descriptor = fetch_descriptor.tobytes().decode("ascii", errors="ignore")
+        elif isinstance(fetch_descriptor, bytearray):
+            descriptor = bytes(fetch_descriptor).decode("ascii", errors="ignore")
+        elif isinstance(fetch_descriptor, bytes):
+            descriptor = fetch_descriptor.decode("ascii", errors="ignore")
+        else:
+            descriptor = fetch_descriptor
+
+        match = re.search(r"FLAGS \(([^)]*)\)", descriptor)
+        if match is None:
+            return [], []
+
+        flags = cls._deduplicate_ordered(match.group(1).split())
+        keywords = [flag for flag in flags if flag not in _SYSTEM_IMAP_FLAGS and not flag.startswith("\\")]
+        return flags, keywords
+
     def _parse_message(self, message: Message, folder: str, imap_uid: int | None = None) -> Email:
         return Email(
             id=self._decode_header_value(message.get("Message-ID")),
@@ -225,6 +269,25 @@ class EmailService:
             headers=dict(message.items()),
             folder=folder,
             imap_uid=imap_uid,
+            imap_flags=None,
+            imap_keywords=None,
+        )
+
+    def _build_email(
+        self,
+        message: Message,
+        folder: str,
+        *,
+        imap_uid: int | None = None,
+        imap_flags: Sequence[str] | None = None,
+        imap_keywords: Sequence[str] | None = None,
+    ) -> Email:
+        parsed_message = self._parse_message(message, folder, imap_uid=imap_uid)
+        return parsed_message.model_copy(
+            update={
+                "imap_flags": list(imap_flags) if imap_flags else None,
+                "imap_keywords": list(imap_keywords) if imap_keywords else None,
+            }
         )
 
     @staticmethod
@@ -253,9 +316,9 @@ class EmailService:
     ) -> List[Email]:
         identifier = email_id.decode("ascii")
         if use_uid:
-            status, message_data = mail.uid("fetch", identifier, "(BODY.PEEK[])")
+            status, message_data = mail.uid("fetch", identifier, "(FLAGS BODY.PEEK[])")
         else:
-            status, message_data = mail.fetch(identifier, "(BODY.PEEK[])")
+            status, message_data = mail.fetch(identifier, "(FLAGS BODY.PEEK[])")
         if status != "OK":
             raise EmailFetchError(
                 f"Unable to fetch email payload for id={identifier} in folder '{folder}'."
@@ -272,11 +335,14 @@ class EmailService:
                 continue
 
             message = email.message_from_bytes(bytes(raw_message))
+            imap_flags, imap_keywords = self._parse_imap_flags(response_part[0])
             parsed_messages.append(
-                self._parse_message(
+                self._build_email(
                     message,
                     folder,
                     imap_uid=self._parse_int_bytes(identifier) if use_uid else None,
+                    imap_flags=imap_flags,
+                    imap_keywords=imap_keywords,
                 )
             )
 

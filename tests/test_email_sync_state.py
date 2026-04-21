@@ -60,6 +60,25 @@ class PostgresEmailVectorStoreSyncTests(unittest.TestCase):
         self.assertEqual(cursor.execute.call_args_list[0].args[1]["document_key"], "doc-123")
 
     @patch("baldwin.email.postgres_store.psycopg.connect")
+    def test_remove_folder_membership_cleans_up_folder_flags_and_keywords(self, connect: Mock) -> None:
+        """Folder reconciliation should remove folder-scoped flags and keywords with the folder membership."""
+        cursor = MagicMock()
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        connection.cursor.return_value.__exit__.return_value = None
+        connect.return_value.__enter__.return_value = connection
+        connect.return_value.__exit__.return_value = None
+
+        store = PostgresEmailVectorStore(database_url="postgresql://localhost/test")
+
+        store.remove_folder_membership(document_key="doc-123", folder_name="Archive")
+
+        update_sql = str(cursor.execute.call_args_list[0].args[0])
+        self.assertIn("folder_uids", update_sql)
+        self.assertIn("folder_flags", update_sql)
+        self.assertIn("folder_keywords", update_sql)
+
+    @patch("baldwin.email.postgres_store.psycopg.connect")
     def test_get_mailbox_sync_state_returns_latest_cursor(self, connect: Mock) -> None:
         """Mailbox sync state lookups should surface the latest stored UID cursor."""
         cursor = MagicMock()

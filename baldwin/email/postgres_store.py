@@ -92,6 +92,8 @@ class PostgresEmailVectorStore(PostgresVectorStore):
             "folder": normalized_email.folders[0] if normalized_email.folders else None,
             "folders": normalized_email.folders,
             "folder_uids": normalized_email.folder_uids,
+            "folder_flags": normalized_email.folder_flags,
+            "folder_keywords": normalized_email.folder_keywords,
             "headers": normalized_email.headers,
         }
         return VectorDocument(
@@ -325,6 +327,8 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                             UPDATE {document_table}
                             SET metadata = jsonb_set(
                                     jsonb_set(
+                                        jsonb_set(
+                                    jsonb_set(
                                         metadata,
                                         '{{folders}}',
                                         COALESCE(
@@ -338,7 +342,15 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                                         true
                                     ),
                                     '{{folder_uids}}',
-                                    COALESCE((metadata -> 'folder_uids') - %(folder_name)s, '{}'::jsonb),
+                                    COALESCE((metadata -> 'folder_uids') - %(folder_name)s, '{{}}'::jsonb),
+                                    true
+                                        ),
+                                        '{{folder_flags}}',
+                                        COALESCE((metadata -> 'folder_flags') - %(folder_name)s, '{{}}'::jsonb),
+                                        true
+                                    ),
+                                    '{{folder_keywords}}',
+                                    COALESCE((metadata -> 'folder_keywords') - %(folder_name)s, '{{}}'::jsonb),
                                     true
                                 )
                             WHERE document_key = %(document_key)s
