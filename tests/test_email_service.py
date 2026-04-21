@@ -1,6 +1,7 @@
 """Unit tests for IMAP connection behavior and folder state inspection."""
 
 import imaplib
+from email.header import Header
 from email.message import EmailMessage
 import unittest
 from unittest.mock import Mock, patch
@@ -184,6 +185,7 @@ class EmailServiceConnectionTests(unittest.TestCase):
         self.assertEqual(status.uidvalidity, 999)
         self.assertEqual(status.uidnext, 103)
         self.assertEqual(status.uids, (101, 102))
+        self.assertEqual(mail.uid.call_args.args, ("search", "ALL"))
 
     @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
     def test_fetch_emails_by_uid_range_sets_imap_uid_on_messages(self, imap4_ssl: Mock) -> None:
@@ -214,6 +216,7 @@ class EmailServiceConnectionTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].imap_uid, 101)
         self.assertEqual(result[0].folder, "INBOX")
+        self.assertEqual(mail.uid.call_args_list[1].args, ("search", "UID 101:101"))
 
     @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
     def test_fetch_emails_by_uid_range_includes_imap_flags_and_keywords(self, imap4_ssl: Mock) -> None:
@@ -251,6 +254,12 @@ class EmailServiceConnectionTests(unittest.TestCase):
 
         self.assertEqual(result[0].imap_flags, ["\\Seen", "project-x"])
         self.assertEqual(result[0].imap_keywords, ["project-x"])
+
+    def test_split_recipients_accepts_header_objects(self) -> None:
+        """Recipient parsing should handle email.header.Header values returned by the stdlib parser."""
+        recipients = EmailService._split_recipients(Header("reply@example.com, second@example.com", "utf-8"))
+
+        self.assertEqual(recipients, ["reply@example.com", "second@example.com"])
 
     @patch("baldwin.email.email_service.EmailService._create_tls_context")
     @patch("baldwin.email.email_service.imaplib.IMAP4")

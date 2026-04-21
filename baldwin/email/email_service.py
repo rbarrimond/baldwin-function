@@ -129,9 +129,12 @@ class EmailService:
         return f'(SINCE "{since_date}")'
 
     @staticmethod
-    def _decode_header_value(raw_value: Optional[str]) -> str:
+    def _decode_header_value(raw_value: object | None) -> str:
         if not raw_value:
             return ""
+
+        if not isinstance(raw_value, str):
+            raw_value = str(raw_value)
 
         decoded_chunks = []
         for value, encoding in decode_header(raw_value):
@@ -142,10 +145,11 @@ class EmailService:
         return "".join(decoded_chunks)
 
     @staticmethod
-    def _split_recipients(raw_value: Optional[str]) -> Optional[List[str]]:
-        if not raw_value:
+    def _split_recipients(raw_value: object | None) -> Optional[List[str]]:
+        decoded_value = EmailService._decode_header_value(raw_value)
+        if not decoded_value:
             return None
-        recipients = [address.strip() for address in raw_value.split(",") if address.strip()]
+        recipients = [address.strip() for address in decoded_value.split(",") if address.strip()]
         return recipients or None
 
     @staticmethod
@@ -353,7 +357,7 @@ class EmailService:
         if status != "OK":
             raise EmailFetchError(f"Unable to select IMAP folder '{folder}'.")
 
-        status, uid_data = mail.uid("search", "UTF-8", "ALL")
+        status, uid_data = mail.uid("search", "ALL")
         if status != "OK":
             raise EmailFetchError(f"Unable to enumerate IMAP UIDs for folder '{folder}'.")
 
@@ -396,7 +400,7 @@ class EmailService:
 
         self._select_folder_status(mail, folder)
         uid_range = f"{start_uid}:{end_uid or '*'}"
-        status, data = mail.uid("search", "UTF-8", f"UID {uid_range}")
+        status, data = mail.uid("search", f"UID {uid_range}")
         if status != "OK":
             raise EmailFetchError(
                 f"Unable to search IMAP UIDs in folder '{folder}' for range {uid_range}."
