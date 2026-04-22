@@ -3,6 +3,8 @@
 
 This repository contains the Azure Function App that powers the backend for Baldwin, an email assistant that reads IMAP mailbox folders, creates digest content, and sends completed digests over SMTP.
 
+The repository also includes a local-only `baldwin.things` integration for reading Things areas, active projects, open to-dos, and attached notes through the `things.py` library.
+
 ## 🧠 Functionality
 
 The following HTTP-triggered Azure Functions are implemented in `function_app.py` using the Python V2 decorator model:
@@ -19,10 +21,15 @@ baldwin-function/
 ├── baldwin/
 │   ├── vector/
 │   │   └── postgres_store.py # Generic pgvector-backed document store
+│   ├── things/
+│   │   ├── __init__.py      # Package exports for local Things helpers
+│   │   ├── client.py        # Typed wrapper over things.py
+│   │   └── models.py        # Things snapshot dataclasses
 │   └── email/
 │       ├── __init__.py     # Package exports for email helpers
 │       └── email_service.py # IMAP parsing and mailbox access helpers
 ├── scripts/
+│   ├── things_snapshot.py   # Local Things snapshot CLI
 │   ├── vectorize_mailbox.py # Manual mailbox vectorization pipeline for PostgreSQL
 │   └── vectorize_inbox.py   # Compatibility shim for the legacy mailbox vectorization entrypoint
 ├── function_app.py         # Core function definitions using @app decorators
@@ -112,6 +119,31 @@ Endpoint-specific ingestion details live in `docs/SCAN_MAIL.md`, including the m
 Schema and storage details live in `docs/EMAIL_VECTORIZATION.md`.
 
 A ready-to-import Postman collection for the HTTP endpoints lives at `docs/Baldwin_Function.postman_collection.json`.
+
+## Things Integration
+
+The `baldwin.things` package is a local workstation integration that reads the Things database through `things.py`. It is intended for macOS environments with Things installed and is not exposed through the Azure Function runtime.
+
+The first version returns:
+
+- areas of responsibility via `ThingsClient.fetch_snapshot().areas`
+- active projects defined as incomplete, non-trashed projects
+- open to-dos defined as incomplete, non-trashed to-dos
+- notes attached to the returned active projects and open to-dos only
+
+Run the local CLI to inspect the current snapshot:
+
+```bash
+things-snapshot
+```
+
+To point at a non-default database path:
+
+```bash
+things-snapshot --database-path /path/to/ThingsData-ABCD1234.sqlite
+```
+
+More detail lives in `docs/THINGS.md`.
 
 ## 📬 Future Features
 

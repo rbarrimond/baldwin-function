@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.5 - 2026-04-22
+
+- Added a new local-only `baldwin.things` package that reads Things areas, active projects, open to-dos, and attached notes through the `things.py` library.
+- Added the `things-snapshot` CLI entrypoint for inspecting the typed Things snapshot from a local workstation.
+- Documented the local Things integration contract and added regression coverage for mapping, note filtering, configuration errors, and the CLI surface.
+
 ## 0.5.4 - 2026-04-21
 
 - Added IMAP flag and keyword support to mailbox ingestion and persisted the results as per-folder metadata in `vector_documents`.

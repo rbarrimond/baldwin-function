@@ -31,3 +31,11 @@ class EmailDeliveryError(EmailServiceError):
 
 class VectorStoreError(BaldwinError):
     """Raised when vector persistence fails."""
+
+
+class ThingsServiceError(BaldwinError):
+    """Base error for local Things database access failures."""
+
+
+class ThingsConfigurationError(BaldwinConfigurationError):
+    """Raised when the Things integration configuration is missing or invalid."""

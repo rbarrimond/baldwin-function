@@ -1,3 +1,3 @@
 """Top-level Baldwin package."""
 
-__all__ = ["email", "embedding", "exceptions", "vector"]
+__all__ = ["email", "embedding", "exceptions", "things", "vector"]

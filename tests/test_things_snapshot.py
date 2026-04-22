@@ -1,0 +1,82 @@
+"""Unit tests for the local Things snapshot script."""
+
+import io
+import json
+import unittest
+from unittest.mock import patch
+
+from baldwin.things import ThingsArea, ThingsNote, ThingsProject, ThingsSnapshot, ThingsTodo
+from scripts import things_snapshot
+
+
+class ThingsSnapshotScriptTests(unittest.TestCase):
+    """Coverage for the local CLI surface."""
+
+    @patch("scripts.things_snapshot.ThingsClient")
+    @patch("sys.stdout", new_callable=io.StringIO)
+    def test_main_prints_snapshot_json(self, stdout, things_client) -> None:
+        """The script should serialize the Baldwin snapshot to JSON."""
+        things_client.return_value.fetch_snapshot.return_value = ThingsSnapshot(
+            areas=(ThingsArea(uuid="area-1", title="Family"),),
+            projects=(
+                ThingsProject(
+                    uuid="project-1",
+                    title="Quarterly Review",
+                    area_uuid="area-1",
+                    notes="Bring last quarter metrics.",
+                    status="incomplete",
+                ),
+            ),
+            todos=(
+                ThingsTodo(
+                    uuid="todo-1",
+                    title="Book dentist",
+                    project_uuid="project-1",
+                    area_uuid="area-1",
+                    notes="Ask about whitening.",
+                    status="incomplete",
+                    start="Anytime",
+                ),
+            ),
+            notes=(
+                ThingsNote(
+                    item_uuid="todo-1",
+                    item_type="to-do",
+                    title="Book dentist",
+                    content="Ask about whitening.",
+                    project_uuid="project-1",
+                    area_uuid="area-1",
+                ),
+            ),
+        )
+
+        with patch("sys.argv", ["things_snapshot"]):
+            exit_code = things_snapshot.main()
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["areas"][0]["title"], "Family")
+        self.assertEqual(payload["projects"][0]["uuid"], "project-1")
+        self.assertEqual(payload["notes"][0]["item_type"], "to-do")
+        things_client.assert_called_once_with(database_path=None)
+
+    @patch("scripts.things_snapshot.ThingsClient")
+    @patch("sys.stdout", new_callable=io.StringIO)
+    def test_main_passes_database_path_argument(self, _stdout, things_client) -> None:
+        """The script should forward the optional database path to the client."""
+        things_client.return_value.fetch_snapshot.return_value = ThingsSnapshot(
+            areas=(),
+            projects=(),
+            todos=(),
+            notes=(),
+        )
+
+        with patch("sys.argv", ["things_snapshot", "--database-path", "/tmp/things.sqlite"]):
+            exit_code = things_snapshot.main()
+
+        self.assertEqual(exit_code, 0)
+        things_client.assert_called_once_with(database_path="/tmp/things.sqlite")
+
+
+if __name__ == "__main__":
+    unittest.main()
