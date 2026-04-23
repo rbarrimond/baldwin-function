@@ -2,9 +2,10 @@
 
 import argparse
 import json
+import os
 from dataclasses import asdict
 
-from baldwin.things import ThingsClient
+from baldwin.things import PostgresThingsStore, ThingsClient, ThingsConfigurationError, ThingsServiceError, ThingsStoreError
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -14,14 +15,42 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="database_path",
         help="Optional explicit path to the Things SQLite database.",
     )
+    parser.add_argument(
+        "--persist",
+        action="store_true",
+        help="Persist the fetched snapshot to PostgreSQL.",
+    )
+    parser.add_argument(
+        "--postgres-database-url",
+        dest="postgres_database_url",
+        default=os.getenv("DATABASE_URL"),
+        help="PostgreSQL connection string used with --persist. Defaults to DATABASE_URL.",
+    )
     return parser
+
+
+def _persist_snapshot(snapshot, database_url: str | None) -> None:
+    if not database_url:
+        raise ThingsConfigurationError("A PostgreSQL database URL is required when --persist is used.")
+
+    store = PostgresThingsStore(database_url)
+    store.bootstrap()
+    store.replace_snapshot(snapshot)
 
 
 def main() -> int:
     """Run the Things snapshot CLI."""
     parser = _build_parser()
     args = parser.parse_args()
-    snapshot = ThingsClient(database_path=args.database_path).fetch_snapshot()
+
+    try:
+        snapshot = ThingsClient(database_path=args.database_path).fetch_snapshot()
+        if args.persist:
+            _persist_snapshot(snapshot, args.postgres_database_url)
+    except (ThingsConfigurationError, ThingsServiceError, ThingsStoreError) as exc:
+        print(f"[things-snapshot] {exc}", file=os.sys.stderr)
+        return 1
+
     payload = {
         "areas": [asdict(area) for area in snapshot.areas],
         "projects": [asdict(project) for project in snapshot.projects],

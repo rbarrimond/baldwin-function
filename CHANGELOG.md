@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.6 - 2026-04-23
+
+- Added `PostgresThingsStore` so `ThingsSnapshot` models can be bootstrapped and persisted into normalized PostgreSQL tables.
+- Extended the `things-snapshot` CLI with an optional `--persist` mode and explicit PostgreSQL connection-string support.
+- Added regression coverage for Things snapshot persistence and updated the Things documentation to describe the new PostgreSQL storage capability.
+
 ## 0.5.5 - 2026-04-22
 
 - Added a new local-only `baldwin.things` package that reads Things areas, active projects, open to-dos, and attached notes through the `things.py` library.

@@ -105,6 +105,37 @@ class ThingsSnapshotScriptTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         things_client.assert_called_once_with(database_path="/tmp/things.sqlite")
 
+    @patch("scripts.things_snapshot.PostgresThingsStore")
+    @patch("scripts.things_snapshot.ThingsClient")
+    @patch("sys.stdout", new_callable=io.StringIO)
+    def test_main_persists_snapshot_when_requested(self, _stdout, things_client, things_store) -> None:
+        """The script should persist the fetched snapshot when --persist is supplied."""
+        snapshot = ThingsSnapshot(
+            areas=(),
+            projects=(),
+            headings=(),
+            todos=(),
+            notes=(),
+        )
+        things_client.return_value.fetch_snapshot.return_value = snapshot
+
+        with patch("sys.argv", ["things_snapshot", "--persist", "--postgres-database-url", "postgresql://localhost/test"]):
+            exit_code = things_snapshot.main()
+
+        self.assertEqual(exit_code, 0)
+        things_store.assert_called_once_with("postgresql://localhost/test")
+        things_store.return_value.bootstrap.assert_called_once_with()
+        things_store.return_value.replace_snapshot.assert_called_once_with(snapshot)
+
+    @patch("sys.stderr", new_callable=io.StringIO)
+    def test_main_returns_error_for_missing_database_url_when_persisting(self, stderr) -> None:
+        """Persist mode should fail cleanly when no PostgreSQL connection string is available."""
+        with patch("sys.argv", ["things_snapshot", "--persist"]):
+            exit_code = things_snapshot.main()
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("PostgreSQL database URL is required", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

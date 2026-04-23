@@ -20,6 +20,31 @@ The package maps the third-party library's raw dictionaries into Baldwin datacla
 
 To-dos also carry explicit nested checklist modeling when checklist items exist. Summary to-do rows in `things.py` may expose checklist presence only as a boolean flag, so the client performs a detailed to-do read to hydrate `checklist_items` when needed.
 
+## PostgreSQL Persistence
+
+The package includes a dedicated `PostgresThingsStore` that can persist the current `ThingsSnapshot` into normalized PostgreSQL tables:
+
+- `things_areas`
+- `things_projects`
+- `things_headings`
+- `things_todos`
+- `things_checklist_items`
+- `things_notes`
+
+Typical usage:
+
+```python
+from baldwin.things import PostgresThingsStore, ThingsClient
+
+snapshot = ThingsClient().fetch_snapshot()
+
+store = PostgresThingsStore("postgresql://localhost/baldwin")
+store.bootstrap()
+store.replace_snapshot(snapshot)
+```
+
+`replace_snapshot()` mirrors the in-memory snapshot into PostgreSQL by replacing the existing rows in those Things tables within a single transaction.
+
 ## Usage
 
 ```python
@@ -51,12 +76,20 @@ Optional explicit database path:
 things-snapshot --database-path /path/to/ThingsData-ABCD1234.sqlite
 ```
 
+To persist the snapshot into PostgreSQL:
+
+```bash
+things-snapshot --persist
+things-snapshot --persist --postgres-database-url postgresql://localhost/baldwin
+```
+
 The CLI prints a JSON payload with `areas`, `projects`, `headings`, `todos`, and `notes` arrays. Each to-do object may also contain a `checklist_items` array plus optional `project_title`, `heading_uuid`, and `heading_title` context when that data is present in the Things database.
 
 ## Failure Semantics
 
 - Missing or invalid client configuration raises `ThingsConfigurationError`.
 - Runtime read failures from the underlying library are translated to `ThingsServiceError` with the original cause preserved.
+- PostgreSQL bootstrap and snapshot persistence failures are translated to `ThingsStoreError` with the original database error preserved as the cause.
 
 ## Dependency
 

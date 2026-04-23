@@ -133,6 +133,8 @@ The first version returns:
 - checklist items nested on each returned to-do when present
 - notes attached to the returned active projects and open to-dos only
 
+The package can also persist a fetched snapshot into PostgreSQL through `PostgresThingsStore`.
+
 Run the local CLI to inspect the current snapshot:
 
 ```bash
@@ -143,6 +145,13 @@ To point at a non-default database path:
 
 ```bash
 things-snapshot --database-path /path/to/ThingsData-ABCD1234.sqlite
+```
+
+To persist the fetched snapshot into PostgreSQL using `DATABASE_URL` or an explicit connection string:
+
+```bash
+things-snapshot --persist
+things-snapshot --persist --postgres-database-url postgresql://localhost/baldwin
 ```
 
 More detail lives in `docs/THINGS.md`.

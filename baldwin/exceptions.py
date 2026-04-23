@@ -39,3 +39,7 @@ class ThingsServiceError(BaldwinError):
 
 class ThingsConfigurationError(BaldwinConfigurationError):
     """Raised when the Things integration configuration is missing or invalid."""
+
+
+class ThingsStoreError(BaldwinError):
+    """Raised when Things snapshot persistence fails."""

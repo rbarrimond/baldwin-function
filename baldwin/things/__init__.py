@@ -1,6 +1,6 @@
 """Public package exports for Baldwin Things helpers."""
 
-from baldwin.exceptions import ThingsConfigurationError, ThingsServiceError
+from baldwin.exceptions import ThingsConfigurationError, ThingsServiceError, ThingsStoreError
 
 from .client import ThingsClient
 from .models import (
@@ -12,6 +12,7 @@ from .models import (
     ThingsSnapshot,
     ThingsTodo,
 )
+from .postgres_store import PostgresThingsStore
 
 __all__ = [
     "ThingsArea",
@@ -23,5 +24,7 @@ __all__ = [
     "ThingsProject",
     "ThingsServiceError",
     "ThingsSnapshot",
+    "ThingsStoreError",
     "ThingsTodo",
+    "PostgresThingsStore",
 ]
