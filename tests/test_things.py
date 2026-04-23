@@ -143,16 +143,31 @@ class ThingsClientTests(unittest.TestCase):
         self.assertEqual(str(captured.exception), "Failed to read Things data.")
         self.assertIsInstance(captured.exception.__cause__, RuntimeError)
 
-    @patch("builtins.__import__")
-    def test_fetch_snapshot_raises_configuration_error_when_dependency_missing(self, import_mock) -> None:
+    def test_fetch_snapshot_replaces_blank_todo_titles_with_stable_fallback(self) -> None:
+        """Blank todo titles from Things should not break snapshot creation."""
+        things_module = self._build_things_module(
+            areas=lambda **_: [],
+            projects=lambda **_: [],
+            todos=lambda **_: [
+                {
+                    "uuid": "todo-blank",
+                    "title": "",
+                    "notes": "",
+                    "status": "incomplete",
+                    "start": "Anytime",
+                }
+            ],
+        )
+
+        with patch.object(ThingsClient, "_load_things_module", return_value=things_module):
+            snapshot = ThingsClient().fetch_snapshot()
+
+        self.assertEqual(snapshot.todos[0].title, "(untitled to-do)")
+
+    @patch("baldwin.things.client.importlib.import_module")
+    def test_fetch_snapshot_raises_configuration_error_when_dependency_missing(self, import_module_mock) -> None:
         """Missing things.py should raise a configuration error with preserved cause."""
-
-        def _import(name, *args, **kwargs):
-            if name == "things":
-                raise ImportError("No module named 'things'")
-            return __import__(name, *args, **kwargs)
-
-        import_mock.side_effect = _import
+        import_module_mock.side_effect = ImportError("No module named 'things'")
 
         with self.assertRaises(ThingsConfigurationError) as captured:
             ThingsClient().fetch_snapshot()

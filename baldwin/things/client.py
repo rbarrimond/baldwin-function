@@ -11,6 +11,7 @@ from .models import ThingsArea, ThingsNote, ThingsProject, ThingsSnapshot, Thing
 _THINGS_IMPORT_ERROR_MESSAGE = (
     "The things.py dependency is not installed. Install runtime dependencies before using baldwin.things."
 )
+_UNTITLED_TODO_TITLE = "(untitled to-do)"
 
 
 class ThingsClient:
@@ -90,6 +91,15 @@ class ThingsClient:
         return value
 
     @classmethod
+    def _todo_title(cls, entry: Mapping[str, Any]) -> str:
+        title = cls._optional_string(entry, "title")
+        if title is None:
+            raise ThingsServiceError("Things to-do is missing required field 'title'.")
+        if title.strip():
+            return title
+        return _UNTITLED_TODO_TITLE
+
+    @classmethod
     def _map_area(cls, entry: Mapping[str, Any]) -> ThingsArea:
         return ThingsArea(
             uuid=cls._require_string(entry, "uuid", entity_name="area"),
@@ -110,7 +120,7 @@ class ThingsClient:
     def _map_todo(cls, entry: Mapping[str, Any]) -> ThingsTodo:
         return ThingsTodo(
             uuid=cls._require_string(entry, "uuid", entity_name="to-do"),
-            title=cls._require_string(entry, "title", entity_name="to-do"),
+            title=cls._todo_title(entry),
             project_uuid=cls._optional_string(entry, "project"),
             area_uuid=cls._optional_string(entry, "area"),
             notes=cls._optional_string(entry, "notes"),
