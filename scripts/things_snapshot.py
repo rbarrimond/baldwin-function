@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import sys
 from dataclasses import asdict
 
 from baldwin.things import PostgresThingsStore, ThingsClient, ThingsConfigurationError, ThingsServiceError, ThingsStoreError
@@ -48,7 +49,7 @@ def main() -> int:
         if args.persist:
             _persist_snapshot(snapshot, args.postgres_database_url)
     except (ThingsConfigurationError, ThingsServiceError, ThingsStoreError) as exc:
-        print(f"[things-snapshot] {exc}", file=os.sys.stderr)
+        print(f"[things-snapshot] {exc}", file=sys.stderr)
         return 1
 
     payload = {
