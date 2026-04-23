@@ -128,7 +128,9 @@ The first version returns:
 
 - areas of responsibility via `ThingsClient.fetch_snapshot().areas`
 - active projects defined as incomplete, non-trashed projects
+- sections/headings via `ThingsClient.fetch_snapshot().headings`
 - open to-dos defined as incomplete, non-trashed to-dos
+- checklist items nested on each returned to-do when present
 - notes attached to the returned active projects and open to-dos only
 
 Run the local CLI to inspect the current snapshot:

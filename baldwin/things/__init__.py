@@ -3,12 +3,22 @@
 from baldwin.exceptions import ThingsConfigurationError, ThingsServiceError
 
 from .client import ThingsClient
-from .models import ThingsArea, ThingsNote, ThingsProject, ThingsSnapshot, ThingsTodo
+from .models import (
+    ThingsArea,
+    ThingsChecklistItem,
+    ThingsHeading,
+    ThingsNote,
+    ThingsProject,
+    ThingsSnapshot,
+    ThingsTodo,
+)
 
 __all__ = [
     "ThingsArea",
+    "ThingsChecklistItem",
     "ThingsClient",
     "ThingsConfigurationError",
+    "ThingsHeading",
     "ThingsNote",
     "ThingsProject",
     "ThingsServiceError",

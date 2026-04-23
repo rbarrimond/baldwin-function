@@ -6,7 +6,15 @@ from typing import Any, cast
 
 from baldwin.exceptions import ThingsConfigurationError, ThingsServiceError
 
-from .models import ThingsArea, ThingsNote, ThingsProject, ThingsSnapshot, ThingsTodo
+from .models import (
+    ThingsArea,
+    ThingsChecklistItem,
+    ThingsHeading,
+    ThingsNote,
+    ThingsProject,
+    ThingsSnapshot,
+    ThingsTodo,
+)
 
 _THINGS_IMPORT_ERROR_MESSAGE = (
     "The things.py dependency is not installed. Install runtime dependencies before using baldwin.things."
@@ -34,6 +42,10 @@ class ThingsClient:
                 things_module.projects(status="incomplete", trashed=False, **query_kwargs),
                 entity_name="projects",
             )
+            raw_headings = self._read_collection(
+                things_module.tasks(type="heading", status="incomplete", trashed=False, **query_kwargs),
+                entity_name="headings",
+            )
             raw_todos = self._read_collection(
                 things_module.todos(status="incomplete", trashed=False, **query_kwargs),
                 entity_name="todos",
@@ -45,9 +57,10 @@ class ThingsClient:
 
         areas = tuple(self._map_area(entry) for entry in raw_areas)
         projects = tuple(self._map_project(entry) for entry in raw_projects)
-        todos = tuple(self._map_todo(entry) for entry in raw_todos)
+        headings = tuple(self._map_heading(entry) for entry in raw_headings)
+        todos = tuple(self._map_todo(entry, things_module=things_module, query_kwargs=query_kwargs) for entry in raw_todos)
         notes = self._collect_notes(projects=projects, todos=todos)
-        return ThingsSnapshot(areas=areas, projects=projects, todos=todos, notes=notes)
+        return ThingsSnapshot(areas=areas, projects=projects, headings=headings, todos=todos, notes=notes)
 
     def _build_query_kwargs(self) -> dict[str, str]:
         if self._database_path is None:
@@ -117,15 +130,76 @@ class ThingsClient:
         )
 
     @classmethod
-    def _map_todo(cls, entry: Mapping[str, Any]) -> ThingsTodo:
+    def _map_heading(cls, entry: Mapping[str, Any]) -> ThingsHeading:
+        return ThingsHeading(
+            uuid=cls._require_string(entry, "uuid", entity_name="heading"),
+            title=cls._require_string(entry, "title", entity_name="heading"),
+            project_uuid=cls._optional_string(entry, "project"),
+            project_title=cls._optional_string(entry, "project_title"),
+            notes=cls._optional_string(entry, "notes"),
+            status=cls._optional_string(entry, "status"),
+            start=cls._optional_string(entry, "start"),
+        )
+
+    @classmethod
+    def _map_checklist_item(cls, entry: Mapping[str, Any]) -> ThingsChecklistItem:
+        return ThingsChecklistItem(
+            uuid=cls._require_string(entry, "uuid", entity_name="checklist item"),
+            title=cls._require_string(entry, "title", entity_name="checklist item"),
+            status=cls._optional_string(entry, "status"),
+        )
+
+    @classmethod
+    def _map_checklist_items(
+        cls,
+        entry: Mapping[str, Any],
+        *,
+        things_module: Any,
+        query_kwargs: Mapping[str, str],
+    ) -> tuple[ThingsChecklistItem, ...]:
+        raw_checklist = entry.get("checklist")
+        if raw_checklist is None:
+            return ()
+        if isinstance(raw_checklist, bool):
+            if not raw_checklist:
+                return ()
+            todo_uuid = cls._require_string(entry, "uuid", entity_name="to-do")
+            detailed_todo = things_module.todos(todo_uuid, **dict(query_kwargs))
+            if not isinstance(detailed_todo, Mapping):
+                raise ThingsServiceError("Things detailed to-do payload must be a mapping.")
+            raw_checklist = detailed_todo.get("checklist")
+            if raw_checklist is None:
+                return ()
+        if not isinstance(raw_checklist, list):
+            raise ThingsServiceError("Things to-do field 'checklist' must be a list when present.")
+
+        checklist_items: list[ThingsChecklistItem] = []
+        for raw_item in raw_checklist:
+            if not isinstance(raw_item, Mapping):
+                raise ThingsServiceError("Things to-do checklist item must be a mapping.")
+            checklist_items.append(cls._map_checklist_item(cast(Mapping[str, Any], raw_item)))
+        return tuple(checklist_items)
+
+    @classmethod
+    def _map_todo(
+        cls,
+        entry: Mapping[str, Any],
+        *,
+        things_module: Any,
+        query_kwargs: Mapping[str, str],
+    ) -> ThingsTodo:
         return ThingsTodo(
             uuid=cls._require_string(entry, "uuid", entity_name="to-do"),
             title=cls._todo_title(entry),
             project_uuid=cls._optional_string(entry, "project"),
+            project_title=cls._optional_string(entry, "project_title"),
             area_uuid=cls._optional_string(entry, "area"),
+            heading_uuid=cls._optional_string(entry, "heading"),
+            heading_title=cls._optional_string(entry, "heading_title"),
             notes=cls._optional_string(entry, "notes"),
             status=cls._optional_string(entry, "status"),
             start=cls._optional_string(entry, "start"),
+            checklist_items=cls._map_checklist_items(entry, things_module=things_module, query_kwargs=query_kwargs),
         )
 
     @staticmethod

@@ -25,6 +25,7 @@ def main() -> int:
     payload = {
         "areas": [asdict(area) for area in snapshot.areas],
         "projects": [asdict(project) for project in snapshot.projects],
+        "headings": [asdict(heading) for heading in snapshot.headings],
         "todos": [asdict(todo) for todo in snapshot.todos],
         "notes": [asdict(note) for note in snapshot.notes],
     }

@@ -23,16 +23,42 @@ class ThingsProject:
 
 
 @dataclass(frozen=True)
+class ThingsHeading:
+    """A project section or heading from Things."""
+
+    uuid: str
+    title: str
+    project_uuid: str | None
+    project_title: str | None
+    notes: str | None
+    status: str | None
+    start: str | None
+
+
+@dataclass(frozen=True)
+class ThingsChecklistItem:
+    """A checklist item embedded within a Things to-do."""
+
+    uuid: str
+    title: str
+    status: str | None
+
+
+@dataclass(frozen=True)
 class ThingsTodo:
     """An open Things to-do."""
 
     uuid: str
     title: str
     project_uuid: str | None
+    project_title: str | None
     area_uuid: str | None
+    heading_uuid: str | None
+    heading_title: str | None
     notes: str | None
     status: str | None
     start: str | None
+    checklist_items: tuple[ThingsChecklistItem, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -53,5 +79,6 @@ class ThingsSnapshot:
 
     areas: tuple[ThingsArea, ...]
     projects: tuple[ThingsProject, ...]
+    headings: tuple[ThingsHeading, ...]
     todos: tuple[ThingsTodo, ...]
     notes: tuple[ThingsNote, ...]

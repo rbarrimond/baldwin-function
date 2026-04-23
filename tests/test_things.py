@@ -7,7 +7,7 @@ from typing import Any, Protocol, cast
 from unittest.mock import patch
 
 from baldwin.exceptions import ThingsConfigurationError, ThingsServiceError
-from baldwin.things import ThingsClient
+from baldwin.things import ThingsChecklistItem, ThingsClient
 
 
 class _ThingsModule(Protocol):
@@ -15,7 +15,8 @@ class _ThingsModule(Protocol):
 
     areas: Callable[..., list[dict[str, Any]]]
     projects: Callable[..., list[dict[str, Any]]]
-    todos: Callable[..., list[dict[str, Any]]]
+    tasks: Callable[..., list[dict[str, Any]]]
+    todos: Callable[..., Any]
 
 
 class ThingsClientTests(unittest.TestCase):
@@ -26,13 +27,15 @@ class ThingsClientTests(unittest.TestCase):
         *,
         areas: Callable[..., list[dict[str, Any]]],
         projects: Callable[..., list[dict[str, Any]]],
-        todos: Callable[..., list[dict[str, Any]]],
+        tasks: Callable[..., list[dict[str, Any]]],
+        todos: Callable[..., Any],
     ) -> _ThingsModule:
         return cast(
             _ThingsModule,
             SimpleNamespace(
                 areas=areas,
                 projects=projects,
+                tasks=tasks,
                 todos=todos,
             ),
         )
@@ -60,15 +63,36 @@ class ThingsClientTests(unittest.TestCase):
                     "status": "incomplete",
                 },
             ],
+            tasks=lambda **_: [
+                {
+                    "uuid": "heading-1",
+                    "title": "Errands",
+                    "project": "project-1",
+                    "project_title": "Quarterly Review",
+                    "notes": "",
+                    "status": "incomplete",
+                    "start": "Anytime",
+                }
+            ],
             todos=lambda **_: [
                 {
                     "uuid": "todo-1",
                     "title": "Book dentist",
                     "project": "project-1",
+                    "project_title": "Quarterly Review",
                     "area": "area-2",
+                    "heading": "heading-1",
+                    "heading_title": "Errands",
                     "notes": "Ask about whitening.",
                     "status": "incomplete",
                     "start": "Anytime",
+                    "checklist": [
+                        {
+                            "uuid": "check-1",
+                            "title": "Call provider",
+                            "status": "incomplete",
+                        }
+                    ],
                 },
                 {
                     "uuid": "todo-2",
@@ -87,7 +111,14 @@ class ThingsClientTests(unittest.TestCase):
 
         self.assertEqual([area.title for area in snapshot.areas], ["Family", "Health"])
         self.assertEqual([project.title for project in snapshot.projects], ["Quarterly Review", "Home Repairs"])
+        self.assertEqual([heading.title for heading in snapshot.headings], ["Errands"])
         self.assertEqual([todo.title for todo in snapshot.todos], ["Book dentist", "Buy paint"])
+        self.assertEqual(snapshot.todos[0].project_title, "Quarterly Review")
+        self.assertEqual(snapshot.todos[0].heading_title, "Errands")
+        self.assertEqual(
+            snapshot.todos[0].checklist_items,
+            (ThingsChecklistItem(uuid="check-1", title="Call provider", status="incomplete"),),
+        )
         self.assertEqual(len(snapshot.notes), 2)
         self.assertEqual(snapshot.notes[0].item_type, "project")
         self.assertEqual(snapshot.notes[0].content, "Bring last quarter metrics.")
@@ -106,11 +137,15 @@ class ThingsClientTests(unittest.TestCase):
             call_kwargs["projects"] = kwargs
             return []
 
+        def _tasks(**kwargs):
+            call_kwargs["tasks"] = kwargs
+            return []
+
         def _todos(**kwargs):
             call_kwargs["todos"] = kwargs
             return []
 
-        things_module = self._build_things_module(areas=_areas, projects=_projects, todos=_todos)
+        things_module = self._build_things_module(areas=_areas, projects=_projects, tasks=_tasks, todos=_todos)
 
         with patch.object(ThingsClient, "_load_things_module", return_value=things_module):
             ThingsClient(database_path="/tmp/things.sqlite").fetch_snapshot()
@@ -119,6 +154,10 @@ class ThingsClientTests(unittest.TestCase):
         self.assertEqual(
             call_kwargs["projects"],
             {"filepath": "/tmp/things.sqlite", "status": "incomplete", "trashed": False},
+        )
+        self.assertEqual(
+            call_kwargs["tasks"],
+            {"filepath": "/tmp/things.sqlite", "type": "heading", "status": "incomplete", "trashed": False},
         )
         self.assertEqual(
             call_kwargs["todos"],
@@ -133,6 +172,7 @@ class ThingsClientTests(unittest.TestCase):
         things_module = self._build_things_module(
             areas=lambda **_: [],
             projects=_projects,
+            tasks=lambda **_: [],
             todos=lambda **_: [],
         )
 
@@ -148,6 +188,7 @@ class ThingsClientTests(unittest.TestCase):
         things_module = self._build_things_module(
             areas=lambda **_: [],
             projects=lambda **_: [],
+            tasks=lambda **_: [],
             todos=lambda **_: [
                 {
                     "uuid": "todo-blank",
@@ -163,6 +204,71 @@ class ThingsClientTests(unittest.TestCase):
             snapshot = ThingsClient().fetch_snapshot()
 
         self.assertEqual(snapshot.todos[0].title, "(untitled to-do)")
+
+    def test_fetch_snapshot_rejects_invalid_checklist_shape(self) -> None:
+        """Checklist values must remain structured lists of checklist-item mappings."""
+        things_module = self._build_things_module(
+            areas=lambda **_: [],
+            projects=lambda **_: [],
+            tasks=lambda **_: [],
+            todos=lambda **_: [
+                {
+                    "uuid": "todo-1",
+                    "title": "Book dentist",
+                    "checklist": "not-a-list",
+                }
+            ],
+        )
+
+        with patch.object(ThingsClient, "_load_things_module", return_value=things_module):
+            with self.assertRaises(ThingsServiceError) as captured:
+                ThingsClient().fetch_snapshot()
+
+        self.assertEqual(str(captured.exception), "Things to-do field 'checklist' must be a list when present.")
+
+    def test_fetch_snapshot_hydrates_checklist_items_from_detailed_todo_when_summary_only_has_flag(self) -> None:
+        """Boolean checklist flags on summary rows should trigger a detailed to-do read."""
+        call_log: list[tuple[Any, dict[str, Any]]] = []
+
+        def _todos(*args, **kwargs):
+            call_log.append((args, kwargs))
+            if args:
+                return {
+                    "uuid": "todo-1",
+                    "title": "Update Quicken Accounts",
+                    "checklist": [
+                        {
+                            "uuid": "check-1",
+                            "title": "Capital One",
+                            "status": "incomplete",
+                        }
+                    ],
+                }
+            return [
+                {
+                    "uuid": "todo-1",
+                    "title": "Update Quicken Accounts",
+                    "checklist": True,
+                    "status": "incomplete",
+                    "start": "Anytime",
+                }
+            ]
+
+        things_module = self._build_things_module(
+            areas=lambda **_: [],
+            projects=lambda **_: [],
+            tasks=lambda **_: [],
+            todos=_todos,
+        )
+
+        with patch.object(ThingsClient, "_load_things_module", return_value=things_module):
+            snapshot = ThingsClient(database_path="/tmp/things.sqlite").fetch_snapshot()
+
+        self.assertEqual(
+            snapshot.todos[0].checklist_items,
+            (ThingsChecklistItem(uuid="check-1", title="Capital One", status="incomplete"),),
+        )
+        self.assertEqual(call_log[1], (("todo-1",), {"filepath": "/tmp/things.sqlite"}))
 
     @patch("baldwin.things.client.importlib.import_module")
     def test_fetch_snapshot_raises_configuration_error_when_dependency_missing(self, import_module_mock) -> None:

@@ -5,7 +5,15 @@ import json
 import unittest
 from unittest.mock import patch
 
-from baldwin.things import ThingsArea, ThingsNote, ThingsProject, ThingsSnapshot, ThingsTodo
+from baldwin.things import (
+    ThingsArea,
+    ThingsChecklistItem,
+    ThingsHeading,
+    ThingsNote,
+    ThingsProject,
+    ThingsSnapshot,
+    ThingsTodo,
+)
 from scripts import things_snapshot
 
 
@@ -27,15 +35,32 @@ class ThingsSnapshotScriptTests(unittest.TestCase):
                     status="incomplete",
                 ),
             ),
+            headings=(
+                ThingsHeading(
+                    uuid="heading-1",
+                    title="Errands",
+                    project_uuid="project-1",
+                    project_title="Quarterly Review",
+                    notes="",
+                    status="incomplete",
+                    start="Anytime",
+                ),
+            ),
             todos=(
                 ThingsTodo(
                     uuid="todo-1",
                     title="Book dentist",
                     project_uuid="project-1",
+                    project_title="Quarterly Review",
                     area_uuid="area-1",
+                    heading_uuid="heading-1",
+                    heading_title="Errands",
                     notes="Ask about whitening.",
                     status="incomplete",
                     start="Anytime",
+                    checklist_items=(
+                        ThingsChecklistItem(uuid="check-1", title="Call provider", status="incomplete"),
+                    ),
                 ),
             ),
             notes=(
@@ -57,6 +82,8 @@ class ThingsSnapshotScriptTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["areas"][0]["title"], "Family")
         self.assertEqual(payload["projects"][0]["uuid"], "project-1")
+        self.assertEqual(payload["headings"][0]["title"], "Errands")
+        self.assertEqual(payload["todos"][0]["checklist_items"][0]["title"], "Call provider")
         self.assertEqual(payload["notes"][0]["item_type"], "to-do")
         things_client.assert_called_once_with(database_path=None)
 
@@ -67,6 +94,7 @@ class ThingsSnapshotScriptTests(unittest.TestCase):
         things_client.return_value.fetch_snapshot.return_value = ThingsSnapshot(
             areas=(),
             projects=(),
+            headings=(),
             todos=(),
             notes=(),
         )
