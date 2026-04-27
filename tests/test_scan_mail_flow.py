@@ -5,9 +5,10 @@ from __future__ import annotations
 import io
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
+from baldwin.http_handlers import ScanMailboxProgress
 from scripts.scan_mail_flow import DEFAULT_SCAN_MAIL_FLOW_MAX_WORKERS, main
 
 
@@ -16,7 +17,7 @@ class ScanMailFlowCliTests(unittest.TestCase):
 
     def test_cli_defaults_to_eight_workers(self) -> None:
         """The scan-mail flow CLI should default to eight workers for local runs."""
-        with patch("scripts.scan_mail_flow._load_runtime_environ", return_value={}):
+        with patch("scripts.scan_mail_flow._load_runtime_environ", return_value={}) as load_runtime_environ:
             with patch("scripts.scan_mail_flow.EmailIngestionService") as ingestion_service:
                 ingestion_service.return_value.ingest_mailbox.return_value = {"status": "ok"}
                 stdout = io.StringIO()
@@ -24,6 +25,7 @@ class ScanMailFlowCliTests(unittest.TestCase):
                     exit_code = main([])
 
         self.assertEqual(exit_code, 0)
+        load_runtime_environ.assert_called_once_with(verbose=False)
         settings = ingestion_service.call_args.args[0]
         self.assertEqual(settings.get("SCAN_MAIL_MAX_WORKERS"), str(DEFAULT_SCAN_MAIL_FLOW_MAX_WORKERS))
 
@@ -53,7 +55,30 @@ class ScanMailFlowCliTests(unittest.TestCase):
             ingestion_service.return_value.ingest_mailbox.call_args.args[1].folders,
             ("Archive", "Receipts"),
         )
+        self.assertIn("progress_callback", ingestion_service.return_value.ingest_mailbox.call_args.kwargs)
         self.assertEqual(json.loads(stdout.getvalue()), summary)
+
+    def test_cli_emits_status_messages_only_when_verbose(self) -> None:
+        """The CLI should keep status logging on stderr behind the verbose flag."""
+        with patch("scripts.scan_mail_flow._load_runtime_environ", return_value={}):
+            with patch("scripts.scan_mail_flow.EmailIngestionService") as ingestion_service:
+                def run_ingestion(days: int, folders, *, progress_callback) -> dict[str, str]:
+                    del days, folders
+                    progress_callback(ScanMailboxProgress("fetch", 1, 2))
+                    progress_callback(ScanMailboxProgress("fetch", 2, 2))
+                    progress_callback(ScanMailboxProgress("persist", 1, 1))
+                    return {"status": "ok"}
+
+                ingestion_service.return_value.ingest_mailbox.side_effect = run_ingestion
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = main(["--verbose"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Running scan-mail flow", stderr.getvalue())
+        self.assertIn("Fetching folders [", stderr.getvalue())
+        self.assertIn("Persisting documents [", stderr.getvalue())
 
     def test_cli_rejects_non_positive_worker_counts(self) -> None:
         """The CLI should reject invalid worker counts before invoking ingestion."""

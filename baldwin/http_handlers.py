@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import imaplib
 import json
 import logging
@@ -63,6 +63,18 @@ class FolderFetchResult:
     folder_status: MailboxFolderStatus
     sync_mode: str
     emails: list[Any]
+
+
+@dataclass(frozen=True)
+class ScanMailboxProgress:
+    """Progress update for a scan-mail ingestion stage."""
+
+    stage: str
+    current: int
+    total: int
+
+
+ProgressCallback = Callable[[ScanMailboxProgress], None]
 
 
 class EnvironmentSettings:
@@ -203,15 +215,35 @@ class EmailIngestionService:
         *,
         worker_count: int,
         func: Callable[[InputT], ResultT],
+        progress_stage: str,
+        progress_callback: ProgressCallback | None = None,
     ) -> list[ResultT]:
         """Apply work in parallel while preserving the input ordering."""
         if not items:
             return []
         if worker_count <= 1 or len(items) == 1:
-            return [func(item) for item in items]
+            results: list[ResultT] = []
+            for index, item in enumerate(items, start=1):
+                results.append(func(item))
+                if progress_callback is not None:
+                    progress_callback(ScanMailboxProgress(progress_stage, index, len(items)))
+            return results
 
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            return list(executor.map(func, items))
+            future_to_index = {
+                executor.submit(func, item): index
+                for index, item in enumerate(items)
+            }
+            ordered_results: list[ResultT | None] = [None] * len(items)
+            completed = 0
+            for future in as_completed(future_to_index):
+                index = future_to_index[future]
+                ordered_results[index] = future.result()
+                completed += 1
+                if progress_callback is not None:
+                    progress_callback(ScanMailboxProgress(progress_stage, completed, len(items)))
+
+            return [result for result in ordered_results if result is not None]
 
     def _incremental_sync_enabled(self) -> bool:
         return (
@@ -276,6 +308,7 @@ class EmailIngestionService:
         folders: MailboxFolders,
         days: int,
         incremental_sync_enabled: bool,
+        progress_callback: ProgressCallback | None = None,
     ) -> tuple[list[Any], dict[str, MailboxFolderStatus], dict[str, str]]:
         """Fetch folder payloads in folder order with bounded concurrency."""
         folder_names = list(folders.folders)
@@ -293,6 +326,8 @@ class EmailIngestionService:
             folder_names,
             worker_count=worker_count,
             func=fetch_folder,
+            progress_stage="fetch",
+            progress_callback=progress_callback,
         )
 
         emails: list[Any] = []
@@ -305,15 +340,27 @@ class EmailIngestionService:
 
         return emails, folder_statuses, sync_modes
 
-    def _normalize_emails(self, emails: Sequence[Any]) -> list[Any]:
+    def _normalize_emails(
+        self,
+        emails: Sequence[Any],
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> list[Any]:
         """Normalize fetched emails with bounded concurrency while preserving order."""
         return self._map_ordered(
             list(emails),
             worker_count=self._resolve_stage_workers(len(emails)),
             func=self.normalizer.normalize,
+            progress_stage="normalize",
+            progress_callback=progress_callback,
         )
 
-    def _embed_searchable_texts(self, searchable_texts: Sequence[str]) -> list[Any]:
+    def _embed_searchable_texts(
+        self,
+        searchable_texts: Sequence[str],
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> list[Any]:
         """Generate embeddings for normalized text with bounded concurrency."""
         texts = list(searchable_texts)
         if not texts:
@@ -321,7 +368,13 @@ class EmailIngestionService:
 
         embedding_provider = self._build_embedding_provider()
         if self._resolve_stage_workers(len(texts)) == 1:
-            return embedding_provider.embed_texts(texts)
+            return self._map_ordered(
+                texts,
+                worker_count=1,
+                func=lambda text: embedding_provider.embed_texts([text])[0],
+                progress_stage="embed",
+                progress_callback=progress_callback,
+            )
 
         def embed_single_text(text: str) -> Any:
             return embedding_provider.embed_texts([text])[0]
@@ -330,6 +383,8 @@ class EmailIngestionService:
             texts,
             worker_count=self._resolve_stage_workers(len(texts)),
             func=embed_single_text,
+            progress_stage="embed",
+            progress_callback=progress_callback,
         )
 
     @staticmethod
@@ -369,7 +424,13 @@ class EmailIngestionService:
 
         return reconciled_missing
 
-    def ingest_mailbox(self, days: int, folders: MailboxFolders) -> dict[str, Any]:
+    def ingest_mailbox(
+        self,
+        days: int,
+        folders: MailboxFolders,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
         """Fetch, normalize, deduplicate, embed, and persist mailbox messages."""
         sync_run_id = str(uuid4())
         observed_at = datetime.now(UTC)
@@ -381,16 +442,18 @@ class EmailIngestionService:
             folders=folders,
             days=days,
             incremental_sync_enabled=self._incremental_sync_enabled(),
+            progress_callback=progress_callback,
         )
 
-        normalized = self._normalize_emails(emails)
+        normalized = self._normalize_emails(emails, progress_callback=progress_callback)
         deduped = self.normalizer.merge_duplicates(normalized)
         embeddings = self._embed_searchable_texts(
-            [email_message.searchable_text for email_message in deduped]
+            [email_message.searchable_text for email_message in deduped],
+            progress_callback=progress_callback,
         )
 
         persisted: list[dict[str, Any]] = []
-        for normalized_email, embedding in zip(deduped, embeddings):
+        for index, (normalized_email, embedding) in enumerate(zip(deduped, embeddings), start=1):
             store_result = vector_store.upsert_email(normalized_email, embedding)
             vector_store.record_document_sync(
                 document_key=normalized_email.fingerprint,
@@ -407,6 +470,8 @@ class EmailIngestionService:
                     "embedding_updated": store_result.embedding_updated,
                 }
             )
+            if progress_callback is not None:
+                progress_callback(ScanMailboxProgress("persist", index, len(deduped)))
 
         reconciled_missing = self._reconcile_folder_membership(
             vector_store=vector_store,

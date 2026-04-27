@@ -197,9 +197,9 @@ curl "http://localhost:7071/api/scan-mail?days=1&folders=INBOX,Archive"
 To run the same ingestion flow locally without starting the Functions host, use the dedicated CLI:
 
 ```bash
-python scripts/scan_mail_flow.py --days 1 --folder INBOX --folder Archive
+python scripts/scan_mail_flow.py --days 1 --folder INBOX --folder Archive --verbose
 ```
 
-The CLI sets `SCAN_MAIL_MAX_WORKERS=8` by default for that run and accepts `--max-workers` to override it explicitly.
+The CLI sets `SCAN_MAIL_MAX_WORKERS=8` by default for that run, accepts `--max-workers` to override it explicitly, and emits status lines plus stage progress bars to stderr only when `--verbose` is provided.
 
 For regression coverage of the public contract, see `tests/test_function_app.py`.
