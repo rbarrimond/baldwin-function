@@ -118,6 +118,10 @@ Endpoint-specific ingestion details live in `docs/SCAN_MAIL.md`, including the m
 
 Schema and storage details live in `docs/EMAIL_VECTORIZATION.md`.
 
+Embedding cost analysis guidance for the current local Ollama path, proxy reporting, and hosted-provider comparisons also lives in `docs/EMAIL_VECTORIZATION.md`.
+
+Use `embedding-cost-report --database-url "$DATABASE_URL" --azure-openai-model text-embedding-3-small` to generate a persisted JSON cost summary and a first-pass Azure OpenAI comparison from the stored vector data.
+
 A ready-to-import Postman collection for the HTTP endpoints lives at `docs/Baldwin_Function.postman_collection.json`.
 
 ## Things Integration

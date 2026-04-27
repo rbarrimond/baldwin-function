@@ -22,6 +22,7 @@ dev = [
 ]
 
 [project.scripts]
+embedding-cost-report = "scripts.embedding_cost_report:main"
 things-snapshot = "scripts.things_snapshot:main"
 vectorize-mailbox = "scripts.vectorize_mailbox:main"
 vectorize-inbox = "scripts.vectorize_inbox:main"
