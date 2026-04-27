@@ -70,11 +70,6 @@ class EmailNormalizer:
     def _merge_folder_uids(existing: NormalizedEmail, candidate: NormalizedEmail) -> dict[str, int]:
         folder_uids = existing.folder_uids.copy()
         for folder_name, folder_uid in candidate.folder_uids.items():
-            if folder_name in folder_uids and folder_uids[folder_name] != folder_uid:
-                raise EmailNormalizationError(
-                    "Conflicting normalized emails share fingerprint "
-                    f"{candidate.fingerprint} but have different IMAP UIDs for folder {folder_name!r}."
-                )
             folder_uids[folder_name] = folder_uid
         return folder_uids
 

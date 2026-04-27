@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.7 - 2026-04-27
+
+- Fixed duplicate email merging so a later observation of the same folder membership can refresh `metadata.folder_uids` instead of raising a normalization conflict.
+- Kept per-folder IMAP flags and keywords aligned with the latest observed mailbox state when that same-folder UID refresh occurs.
+
 ## 0.5.6 - 2026-04-23
 
 - Added `PostgresThingsStore` so `ThingsSnapshot` models can be bootstrapped and persisted into normalized PostgreSQL tables.

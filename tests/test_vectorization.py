@@ -211,6 +211,57 @@ class EmailNormalizerTests(unittest.TestCase):
             },
         )
 
+    def test_merge_duplicates_refreshes_uid_for_same_folder_membership(self) -> None:
+        """Duplicate merges should keep the latest observed UID for the same folder membership."""
+        normalizer = EmailNormalizer()
+        first = normalizer.normalize(
+            Email(
+                id="<message-123@example.com>",
+                subject="Subject",
+                sender="sender@example.com",
+                to=["recipient@example.com"],
+                cc=None,
+                bcc=None,
+                reply_to=None,
+                date="Fri, 11 Apr 2026 09:15:00 +0000",
+                body="Body text",
+                headers={"Message-ID": "<message-123@example.com>"},
+                folder="Archive",
+                imap_uid=202,
+                imap_flags=["\\Seen"],
+                imap_keywords=["archive-tag"],
+            )
+        )
+        refreshed = normalizer.normalize(
+            Email(
+                id="<message-123@example.com>",
+                subject="Subject",
+                sender="sender@example.com",
+                to=["recipient@example.com"],
+                cc=None,
+                bcc=None,
+                reply_to=None,
+                date="Fri, 11 Apr 2026 09:15:00 +0000",
+                body="Body text",
+                headers={"Message-ID": "<message-123@example.com>"},
+                folder="Archive",
+                imap_uid=404,
+                imap_flags=["\\Seen", "\\Flagged"],
+                imap_keywords=["archive-tag", "starred"],
+            )
+        )
+
+        merged = normalizer.merge_duplicates([first, refreshed])
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].folders, ["Archive"])
+        self.assertEqual(merged[0].folder_uids, {"Archive": 404})
+        self.assertEqual(merged[0].folder_flags, {"Archive": ["\\Seen", "\\Flagged"]})
+        self.assertEqual(
+            merged[0].folder_keywords,
+            {"Archive": ["archive-tag", "starred"]},
+        )
+
     def test_merge_duplicates_raises_email_normalization_error_on_checksum_conflict(self) -> None:
         """Checksum conflicts should raise a Baldwin normalization error with context."""
         normalizer = EmailNormalizer()
