@@ -6,6 +6,8 @@ The persistence layer now uses a generic vector-document store with an email-spe
 
 The email adapter now also supports mailbox cursor state and reconciliation through `mailbox_sync_state` and `document_sync_runs`, while the core vector document and embedding tables remain the content source of truth.
 
+The `scan-mail` HTTP path now uses bounded multithreading for per-folder fetch, normalization, and embedding stages, while keeping persistence, sync-state writes, and folder-membership reconciliation serialized to preserve the documented mailbox invariants.
+
 ## Scope
 
 - The first implementation is a manual script.
@@ -25,6 +27,7 @@ The script accepts the following settings:
 - `IMAP_HOST` (optional): IMAP hostname, default `imap.mail.me.com`.
 - `IMAP_PORT` (optional): IMAP port, default `993`.
 - `IMAP_FOLDERS` (optional): comma-separated default IMAP folder list, default `INBOX`.
+- `SCAN_MAIL_MAX_WORKERS` (optional): upper bound for threaded `scan-mail` fetch, normalization, and embedding stages, default `4`.
 - `EMBEDDING_PROVIDER` (optional): provider identifier, default `ollama`.
 - `EMBEDDING_BASE_URL` (optional): provider base URL, default `http://127.0.0.1:11434`.
 - `EMBEDDING_MODEL` (optional): model identifier, default `qllama/bge-small-en-v1.5`.

@@ -67,21 +67,24 @@ The endpoint performs the following steps:
 
 1. Parse and validate the HTTP query parameters.
 2. Resolve the effective IMAP folder list.
-3. Open an IMAP session with `EmailService`.
+3. Resolve a bounded worker pool size for the threaded fetch, normalization, and embedding stages.
 4. Inspect each requested folder for current `UIDVALIDITY`, `UIDNEXT`, and server UID membership.
 5. Resume from the stored UID cursor when possible; otherwise fall back to the requested lookback window.
-6. Normalize each message using `EmailNormalizer`.
-7. Merge duplicates while preserving folder provenance and current folder UID mappings.
-8. Preserve per-folder IMAP flags and keywords for each observed folder membership.
-9. Generate embeddings from each normalized `searchable_text` value.
-10. Persist metadata and embeddings through `PostgresEmailVectorStore`.
-11. Record a sync run observation for each persisted document.
-12. Reconcile previously tracked folder memberships that disappeared from the IMAP server.
-13. Update mailbox-level sync state for each scanned IMAP folder.
-14. Delete email documents that no longer belong to any tracked folder.
-15. Return a JSON summary of the ingestion run.
+6. Fetch each requested folder on its own IMAP service instance while preserving the requested folder order in the aggregated result.
+7. Normalize each message using `EmailNormalizer`.
+8. Merge duplicates while preserving folder provenance and current folder UID mappings.
+9. Preserve per-folder IMAP flags and keywords for each observed folder membership.
+10. Generate embeddings from each normalized `searchable_text` value.
+11. Persist metadata and embeddings through `PostgresEmailVectorStore`.
+12. Record a sync run observation for each persisted document.
+13. Reconcile previously tracked folder memberships that disappeared from the IMAP server.
+14. Update mailbox-level sync state for each scanned IMAP folder.
+15. Delete email documents that no longer belong to any tracked folder.
+16. Return a JSON summary of the ingestion run.
 
 The implementation intentionally builds the embedding provider and vector store lazily inside the ingestion path. This keeps `function_app.py` import-safe for local development and tests when `DATABASE_URL` is not configured, while still enforcing the requirement when `/api/scan-mail` is invoked.
+
+The threaded stages are intentionally bounded and ordered. Folder fetches, normalization, and embedding generation can run across worker threads, but PostgreSQL persistence, folder-membership reconciliation, and stale-document deletion remain serialized so the sync-state invariants stay unchanged.
 
 The email store now also records mailbox sync-state tables in PostgreSQL:
 
@@ -100,6 +103,7 @@ The scan-mail endpoint depends on the following environment variables:
 - `IMAP_PORT`: Optional IMAP port. Defaults to `993`.
 - `IMAP_FOLDERS`: Optional default comma-separated IMAP folder list.
 - `IMAP_INCREMENTAL_SYNC`: Optional toggle for UID-based incremental sync. Defaults to `true`.
+- `SCAN_MAIL_MAX_WORKERS`: Optional upper bound for threaded scan-mail fetch, normalization, and embedding stages. Defaults to `4`.
 - `DATABASE_URL`: Required PostgreSQL connection string for vector persistence.
 - `EMBEDDING_PROVIDER`: Optional embedding provider identifier.
 - `EMBEDDING_BASE_URL`: Optional provider base URL.
@@ -189,5 +193,13 @@ Then call the endpoint:
 ```bash
 curl "http://localhost:7071/api/scan-mail?days=1&folders=INBOX,Archive"
 ```
+
+To run the same ingestion flow locally without starting the Functions host, use the dedicated CLI:
+
+```bash
+python scripts/scan_mail_flow.py --days 1 --folder INBOX --folder Archive
+```
+
+The CLI sets `SCAN_MAIL_MAX_WORKERS=8` by default for that run and accepts `--max-workers` to override it explicitly.
 
 For regression coverage of the public contract, see `tests/test_function_app.py`.

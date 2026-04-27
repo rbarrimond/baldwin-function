@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "baldwin-function"
-version = "0.5.7"
+version = "0.5.8"
 description = "Azure Functions backend for Baldwin mailbox workflows."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -23,6 +23,7 @@ dev = [
 
 [project.scripts]
 embedding-cost-report = "scripts.embedding_cost_report:main"
+scan-mail-flow = "scripts.scan_mail_flow:main"
 things-snapshot = "scripts.things_snapshot:main"
 vectorize-mailbox = "scripts.vectorize_mailbox:main"
 vectorize-inbox = "scripts.vectorize_inbox:main"

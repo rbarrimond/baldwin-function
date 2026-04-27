@@ -114,6 +114,14 @@ python scripts/vectorize_mailbox.py --days 1 --folder INBOX --folder Archive --d
 
 The legacy `scripts/vectorize_inbox.py` entrypoint remains as a compatibility shim.
 
+To run the actual `scan-mail` ingestion flow from the command line, including mailbox cursor state and reconciliation behavior, use:
+
+```bash
+python scripts/scan_mail_flow.py --days 1 --folder INBOX --folder Archive
+```
+
+The `scan-mail-flow` CLI sets `SCAN_MAIL_MAX_WORKERS=8` by default for that run. Override it with `--max-workers` when needed.
+
 Endpoint-specific ingestion details live in `docs/SCAN_MAIL.md`, including the mailbox cursor and reconciliation behavior used by `/api/scan-mail`.
 
 Schema and storage details live in `docs/EMAIL_VECTORIZATION.md`.

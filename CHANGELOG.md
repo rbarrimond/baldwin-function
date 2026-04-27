@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.8 - 2026-04-27
+
+- Added a dedicated `scan-mail-flow` CLI that runs the real `scan-mail` ingestion path with explicit `days`, folder, and worker-count inputs instead of the older mailbox-vectorization flow.
+- Defaulted the new CLI to `8` scan-mail workers per run while leaving the HTTP endpoint's environment default unchanged.
+- Documented the new local scan-mail CLI surface.
+
 ## 0.5.7 - 2026-04-27
 
 - Fixed duplicate email merging so a later observation of the same folder membership can refresh `metadata.folder_uids` instead of raising a normalization conflict.

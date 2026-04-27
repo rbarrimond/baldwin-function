@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import imaplib
 import json
 import logging
@@ -11,7 +12,7 @@ import smtplib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.message import EmailMessage
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, Sequence, TypeVar
 from uuid import uuid4
 
 from azure.functions import HttpRequest, HttpResponse
@@ -21,6 +22,7 @@ from baldwin.email import (
     EmailDeliveryError,
     EmailFetchError,
     EmailService,
+    MailboxFolderStatus,
     MailboxFolders,
 )
 from baldwin.email.postgres_store import PostgresEmailVectorStore
@@ -39,7 +41,10 @@ from baldwin.exceptions import (
 JSON_MIMETYPE = "application/json"
 MARKDOWN_MIMETYPE = "text/markdown"
 DEFAULT_SUMMARY_WORD_LIMIT = 48
+DEFAULT_SCAN_MAIL_MAX_WORKERS = 4
 INTERNAL_SERVER_ERROR_MESSAGE = "Internal server error."
+InputT = TypeVar("InputT")
+ResultT = TypeVar("ResultT")
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,16 @@ class ScanMailboxRequest:
 
     days: int
     folders: MailboxFolders
+
+
+@dataclass(frozen=True)
+class FolderFetchResult:
+    """Threaded fetch result for a single IMAP folder."""
+
+    folder_name: str
+    folder_status: MailboxFolderStatus
+    sync_mode: str
+    emails: list[Any]
 
 
 class EnvironmentSettings:
@@ -142,6 +157,16 @@ class EmailIngestionService:
         """Create the vector store from the current environment settings."""
         return PostgresEmailVectorStore(self.settings.get_required("DATABASE_URL"))
 
+    def _build_email_service(self) -> EmailService:
+        """Create an IMAP service from the current environment settings."""
+        return EmailService(
+            self.settings.get_required("IMAP_USER"),
+            self.settings.get_required("IMAP_PASSWORD"),
+            imap_host=self.settings.get("IMAP_HOST", "imap.mail.me.com")
+            or "imap.mail.me.com",
+            imap_port=self.settings.get_int("IMAP_PORT", 993),
+        )
+
     def _ensure_store_schema(self, vector_store: PostgresEmailVectorStore) -> None:
         """Create required persistence schema once per process lifecycle."""
         if self._schema_ready:
@@ -154,64 +179,158 @@ class EmailIngestionService:
         """Create the configured embedding provider on demand."""
         return build_embedding_provider(load_embedding_settings())
 
+    def _scan_mail_max_workers(self) -> int:
+        """Return the configured upper bound for threaded scan-mail stages."""
+        max_workers = self.settings.get_int(
+            "SCAN_MAIL_MAX_WORKERS",
+            DEFAULT_SCAN_MAIL_MAX_WORKERS,
+        )
+        if max_workers < 1:
+            raise BaldwinConfigurationError(
+                "App setting 'SCAN_MAIL_MAX_WORKERS' must be greater than 0."
+            )
+        return max_workers
+
+    def _resolve_stage_workers(self, item_count: int) -> int:
+        """Resolve a bounded worker count for a specific ingestion stage."""
+        if item_count < 1:
+            return 1
+        return min(item_count, self._scan_mail_max_workers())
+
+    @staticmethod
+    def _map_ordered(
+        items: Sequence[InputT],
+        *,
+        worker_count: int,
+        func: Callable[[InputT], ResultT],
+    ) -> list[ResultT]:
+        """Apply work in parallel while preserving the input ordering."""
+        if not items:
+            return []
+        if worker_count <= 1 or len(items) == 1:
+            return [func(item) for item in items]
+
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            return list(executor.map(func, items))
+
     def _incremental_sync_enabled(self) -> bool:
         return (
             str(self.settings.get("IMAP_INCREMENTAL_SYNC", "true")).strip().lower()
             not in {"0", "false", "no", "off"}
         )
 
-    @staticmethod
-    def _fetch_folder_payloads(
+    def _fetch_single_folder_payload(
+        self,
         *,
-        email_service: EmailService,
+        folder_name: str,
+        days: int,
+        vector_store: PostgresEmailVectorStore,
+        incremental_sync_enabled: bool,
+    ) -> FolderFetchResult:
+        """Fetch the payload for one folder using its own IMAP service instance."""
+        email_service = self._build_email_service()
+        folder_status = email_service.get_folder_status(folder_name)
+        stored_state = vector_store.get_mailbox_sync_state(
+            imap_user=email_service.imap_user,
+            imap_host=email_service.imap_host,
+            imap_folder=folder_name,
+        )
+        last_synced_uid = (
+            int(stored_state["last_synced_uid"])
+            if stored_state is not None and stored_state.get("last_synced_uid") is not None
+            else None
+        )
+        has_valid_cursor = (
+            incremental_sync_enabled
+            and stored_state is not None
+            and stored_state.get("uidvalidity") == folder_status.uidvalidity
+            and last_synced_uid is not None
+        )
+
+        if has_valid_cursor:
+            emails: list[Any] = []
+            if folder_status.uidnext is not None and last_synced_uid + 1 < folder_status.uidnext:
+                emails = email_service.fetch_emails_by_uid_range(
+                    folder_name,
+                    start_uid=last_synced_uid + 1,
+                    end_uid=folder_status.uidnext - 1,
+                )
+            return FolderFetchResult(
+                folder_name=folder_name,
+                folder_status=folder_status,
+                sync_mode="incremental",
+                emails=emails,
+            )
+
+        return FolderFetchResult(
+            folder_name=folder_name,
+            folder_status=folder_status,
+            sync_mode="full",
+            emails=email_service.fetch_emails(days, MailboxFolders((folder_name,))),
+        )
+
+    def _fetch_folder_payloads(
+        self,
+        *,
         vector_store: PostgresEmailVectorStore,
         folders: MailboxFolders,
         days: int,
         incremental_sync_enabled: bool,
-    ) -> tuple[list[Any], dict[str, Any], dict[str, str]]:
-        folder_statuses = {
-            folder_name: email_service.get_folder_status(folder_name)
-            for folder_name in folders.folders
-        }
+    ) -> tuple[list[Any], dict[str, MailboxFolderStatus], dict[str, str]]:
+        """Fetch folder payloads in folder order with bounded concurrency."""
+        folder_names = list(folders.folders)
+        worker_count = self._resolve_stage_workers(len(folder_names))
+
+        def fetch_folder(folder_name: str) -> FolderFetchResult:
+            return self._fetch_single_folder_payload(
+                folder_name=folder_name,
+                days=days,
+                vector_store=vector_store,
+                incremental_sync_enabled=incremental_sync_enabled,
+            )
+
+        folder_results = self._map_ordered(
+            folder_names,
+            worker_count=worker_count,
+            func=fetch_folder,
+        )
+
         emails: list[Any] = []
+        folder_statuses: dict[str, MailboxFolderStatus] = {}
         sync_modes: dict[str, str] = {}
-
-        for folder_name in folders.folders:
-            folder_status = folder_statuses[folder_name]
-            stored_state = vector_store.get_mailbox_sync_state(
-                imap_user=email_service.imap_user,
-                imap_host=email_service.imap_host,
-                imap_folder=folder_name,
-            )
-            last_synced_uid = (
-                int(stored_state["last_synced_uid"])
-                if stored_state is not None and stored_state.get("last_synced_uid") is not None
-                else None
-            )
-            has_valid_cursor = (
-                incremental_sync_enabled
-                and stored_state is not None
-                and stored_state.get("uidvalidity") == folder_status.uidvalidity
-                and last_synced_uid is not None
-            )
-
-            if has_valid_cursor:
-                sync_modes[folder_name] = "incremental"
-                assert last_synced_uid is not None
-                if folder_status.uidnext is not None and last_synced_uid + 1 < folder_status.uidnext:
-                    emails.extend(
-                        email_service.fetch_emails_by_uid_range(
-                            folder_name,
-                            start_uid=last_synced_uid + 1,
-                            end_uid=folder_status.uidnext - 1,
-                        )
-                    )
-                continue
-
-            sync_modes[folder_name] = "full"
-            emails.extend(email_service.fetch_emails(days, MailboxFolders((folder_name,))))
+        for folder_result in folder_results:
+            folder_statuses[folder_result.folder_name] = folder_result.folder_status
+            sync_modes[folder_result.folder_name] = folder_result.sync_mode
+            emails.extend(folder_result.emails)
 
         return emails, folder_statuses, sync_modes
+
+    def _normalize_emails(self, emails: Sequence[Any]) -> list[Any]:
+        """Normalize fetched emails with bounded concurrency while preserving order."""
+        return self._map_ordered(
+            list(emails),
+            worker_count=self._resolve_stage_workers(len(emails)),
+            func=self.normalizer.normalize,
+        )
+
+    def _embed_searchable_texts(self, searchable_texts: Sequence[str]) -> list[Any]:
+        """Generate embeddings for normalized text with bounded concurrency."""
+        texts = list(searchable_texts)
+        if not texts:
+            return []
+
+        embedding_provider = self._build_embedding_provider()
+        if self._resolve_stage_workers(len(texts)) == 1:
+            return embedding_provider.embed_texts(texts)
+
+        def embed_single_text(text: str) -> Any:
+            return embedding_provider.embed_texts([text])[0]
+
+        return self._map_ordered(
+            texts,
+            worker_count=self._resolve_stage_workers(len(texts)),
+            func=embed_single_text,
+        )
 
     @staticmethod
     def _reconcile_folder_membership(
@@ -254,27 +373,19 @@ class EmailIngestionService:
         """Fetch, normalize, deduplicate, embed, and persist mailbox messages."""
         sync_run_id = str(uuid4())
         observed_at = datetime.now(UTC)
-        email_service = EmailService(
-            self.settings.get_required("IMAP_USER"),
-            self.settings.get_required("IMAP_PASSWORD"),
-            imap_host=self.settings.get("IMAP_HOST", "imap.mail.me.com")
-            or "imap.mail.me.com",
-            imap_port=self.settings.get_int("IMAP_PORT", 993),
-        )
+        email_service = self._build_email_service()
         vector_store = self._build_vector_store()
         self._ensure_store_schema(vector_store)
         emails, folder_statuses, sync_modes = self._fetch_folder_payloads(
-            email_service=email_service,
             vector_store=vector_store,
             folders=folders,
             days=days,
             incremental_sync_enabled=self._incremental_sync_enabled(),
         )
 
-        normalized = [self.normalizer.normalize(email_message) for email_message in emails]
+        normalized = self._normalize_emails(emails)
         deduped = self.normalizer.merge_duplicates(normalized)
-        embedding_provider = self._build_embedding_provider()
-        embeddings = embedding_provider.embed_texts(
+        embeddings = self._embed_searchable_texts(
             [email_message.searchable_text for email_message in deduped]
         )
 

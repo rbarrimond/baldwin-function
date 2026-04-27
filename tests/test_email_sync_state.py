@@ -3,11 +3,41 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 from unittest.mock import MagicMock, Mock, patch
 
-from baldwin.email import Email, MailboxFolders, PostgresEmailVectorStore
+from baldwin.email import Email, MailboxFolderStatus, MailboxFolders, PostgresEmailVectorStore
 from baldwin.embedding import EmbeddingResult
-from baldwin.http_handlers import EmailIngestionService, EnvironmentSettings
+from baldwin.exceptions import BaldwinConfigurationError
+from baldwin.http_handlers import EmailIngestionService, EnvironmentSettings, FolderFetchResult
+
+
+class TestableEmailIngestionService(EmailIngestionService):
+    """Expose protected helper methods for focused unit tests."""
+
+    def scan_mail_max_workers(self) -> int:
+        """Expose the max worker count parsing logic for direct testing."""
+        return self._scan_mail_max_workers()
+
+    def fetch_folder_payloads(
+        self,
+        *,
+        vector_store: Mock,
+        folders: MailboxFolders,
+        days: int,
+        incremental_sync_enabled: bool,
+    ) -> tuple[list[Any], dict[str, MailboxFolderStatus], dict[str, str]]:
+        """Expose the folder payload fetching logic for direct testing."""
+        return self._fetch_folder_payloads(
+            vector_store=vector_store,
+            folders=folders,
+            days=days,
+            incremental_sync_enabled=incremental_sync_enabled,
+        )
+
+    def embed_searchable_texts(self, searchable_texts: list[str]) -> list[EmbeddingResult]:
+        """Expose the embedding logic for direct testing."""
+        return self._embed_searchable_texts(searchable_texts)
 
 
 class PostgresEmailVectorStoreSyncTests(unittest.TestCase):
@@ -106,6 +136,91 @@ class PostgresEmailVectorStoreSyncTests(unittest.TestCase):
 
 class EmailIngestionServiceSyncTests(unittest.TestCase):
     """Behavior tests for wiring sync-state recording into mailbox ingestion."""
+
+    def test_scan_mail_max_workers_must_be_positive(self) -> None:
+        """Threaded scan-mail stages should reject non-positive worker counts."""
+        service = TestableEmailIngestionService(
+            EnvironmentSettings(
+                {
+                    "DATABASE_URL": "postgresql://localhost/test",
+                    "IMAP_USER": "user@example.com",
+                    "IMAP_PASSWORD": "password",
+                    "SCAN_MAIL_MAX_WORKERS": "0",
+                }
+            )
+        )
+
+        with self.assertRaises(BaldwinConfigurationError):
+            service.scan_mail_max_workers()
+
+    def test_fetch_folder_payloads_preserves_folder_order_when_threaded(self) -> None:
+        """Threaded folder fetches should aggregate results in requested folder order."""
+        service = TestableEmailIngestionService(
+            EnvironmentSettings(
+                {
+                    "DATABASE_URL": "postgresql://localhost/test",
+                    "IMAP_USER": "user@example.com",
+                    "IMAP_PASSWORD": "password",
+                    "SCAN_MAIL_MAX_WORKERS": "4",
+                }
+            )
+        )
+        folder_status = Mock(message_count=1, uidvalidity=999, uidnext=2, uids=(1,))
+
+        def build_folder_result(*, folder_name: str, days: int, vector_store: Mock, incremental_sync_enabled: bool) -> FolderFetchResult:
+            del days, vector_store, incremental_sync_enabled
+            return FolderFetchResult(
+                folder_name=folder_name,
+                folder_status=folder_status,
+                sync_mode="full",
+                emails=[f"email-from-{folder_name}"],
+            )
+
+        with patch.object(service, "_fetch_single_folder_payload", side_effect=build_folder_result):
+            emails, folder_statuses, sync_modes = service.fetch_folder_payloads(
+                vector_store=MagicMock(),
+                folders=MailboxFolders.from_values(["INBOX", "Archive"]),
+                days=1,
+                incremental_sync_enabled=True,
+            )
+
+        self.assertEqual(emails, ["email-from-INBOX", "email-from-Archive"])
+        self.assertEqual(list(folder_statuses.keys()), ["INBOX", "Archive"])
+        self.assertEqual(sync_modes, {"INBOX": "full", "Archive": "full"})
+
+    def test_embed_searchable_texts_preserves_input_order_when_threaded(self) -> None:
+        """Threaded embedding work should preserve the deduped input ordering."""
+        service = TestableEmailIngestionService(
+            EnvironmentSettings(
+                {
+                    "DATABASE_URL": "postgresql://localhost/test",
+                    "IMAP_USER": "user@example.com",
+                    "IMAP_PASSWORD": "password",
+                    "SCAN_MAIL_MAX_WORKERS": "4",
+                }
+            )
+        )
+
+        class DeterministicProvider:
+            """A mock embedding provider that returns the input text as metadata for deterministic testing."""
+
+            def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
+                """Return an embedding result with the input text in metadata for each input text."""
+                return [
+                    EmbeddingResult(
+                        vector=[float(len(text))],
+                        provider="hashing",
+                        model_name="hashing-v1",
+                        dimensions=1,
+                        metadata={"text": text},
+                    )
+                    for text in texts
+                ]
+
+        with patch.object(service, "_build_embedding_provider", return_value=DeterministicProvider()):
+            embeddings = service.embed_searchable_texts(["bbb", "a", "cc"])
+
+        self.assertEqual([embedding.metadata["text"] for embedding in embeddings], ["bbb", "a", "cc"])
 
     @patch("baldwin.http_handlers.EmailService.get_folder_status")
     @patch("baldwin.http_handlers.EmailService.fetch_emails_by_uid_range")
