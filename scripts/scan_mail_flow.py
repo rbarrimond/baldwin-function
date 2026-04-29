@@ -13,7 +13,6 @@ from typing import Sequence
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# pylint: disable=wrong-import-position
 from baldwin.email import DEFAULT_IMAP_FOLDER, EmailFetchError, MailboxFolders
 from baldwin.embedding import EmbeddingProviderError
 from baldwin.exceptions import (
