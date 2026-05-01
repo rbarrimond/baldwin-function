@@ -275,7 +275,7 @@ class EmailServiceConnectionTests(unittest.TestCase):
 
     def test_split_recipients_accepts_header_objects(self) -> None:
         """Recipient parsing should handle email.header.Header values returned by the stdlib parser."""
-        recipients = EmailService._split_recipients(Header("reply@example.com, second@example.com", "utf-8"))
+        recipients = EmailService._split_recipients(Header("reply@example.com, second@example.com", "utf-8"))  # pylint: disable=protected-access
 
         self.assertEqual(recipients, ["reply@example.com", "second@example.com"])
 
@@ -289,7 +289,7 @@ class EmailServiceConnectionTests(unittest.TestCase):
         message["Reply-To"] = Header("reply@example.com", "utf-8")
         message.set_content("Inbox body")
 
-        parsed = EmailService("user@example.com", "password")._parse_message(message, "INBOX")
+        parsed = EmailService("user@example.com", "password")._parse_message(message, "INBOX")  # pylint: disable=protected-access
 
         self.assertEqual(parsed.reply_to, ["reply@example.com"])
         self.assertEqual(parsed.headers["Reply-To"], "reply@example.com")
