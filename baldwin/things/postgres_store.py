@@ -9,6 +9,9 @@ import psycopg
 from psycopg import sql
 
 from baldwin.exceptions import ThingsStoreError
+from baldwin.log import get_logger
+
+_logger = get_logger(__name__)
 
 from .models import (
     ThingsArea,
@@ -50,6 +53,7 @@ class PostgresThingsStore:
 
     def bootstrap(self) -> None:
         """Create the Things snapshot tables when they do not yet exist."""
+        _logger.debug("Bootstrapping Things schema")
         try:
             with psycopg.connect(self.database_url, autocommit=True) as connection:
                 with connection.cursor() as cursor:
@@ -149,10 +153,17 @@ class PostgresThingsStore:
                         ).format(notes_table=sql.Identifier(self.notes_table))
                     )
         except psycopg.Error as exc:
+            _logger.exception("Failed to bootstrap Things schema")
             raise ThingsStoreError("Failed to bootstrap PostgreSQL Things storage.") from exc
+        _logger.info("Things schema bootstrap complete")
 
     def replace_snapshot(self, snapshot: ThingsSnapshot) -> None:
         """Replace the stored Things snapshot with the latest in-memory snapshot."""
+        _logger.debug(
+            "Replacing Things snapshot: areas=%d projects=%d headings=%d todos=%d notes=%d",
+            len(snapshot.areas), len(snapshot.projects), len(snapshot.headings),
+            len(snapshot.todos), len(snapshot.notes),
+        )
         try:
             with psycopg.connect(self.database_url) as connection:
                 with connection.cursor() as cursor:
@@ -165,7 +176,13 @@ class PostgresThingsStore:
                     self._insert_notes(cursor, snapshot.notes)
                 connection.commit()
         except psycopg.Error as exc:
+            _logger.exception("Failed to persist Things snapshot")
             raise ThingsStoreError("Failed to persist Things snapshot.") from exc
+        _logger.info(
+            "Things snapshot replaced: areas=%d projects=%d headings=%d todos=%d notes=%d",
+            len(snapshot.areas), len(snapshot.projects), len(snapshot.headings),
+            len(snapshot.todos), len(snapshot.notes),
+        )
 
     def _delete_all(self, cursor: psycopg.Cursor) -> None:
         for table_name in (

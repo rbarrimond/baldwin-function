@@ -12,7 +12,9 @@ from typing import Any, Mapping, Protocol
 from urllib import error, request
 
 from baldwin.exceptions import BaldwinConfigurationError, BaldwinError
+from baldwin.log import get_logger
 
+_logger = get_logger(__name__)
 
 DEFAULT_EMBEDDING_PROVIDER = "ollama"
 DEFAULT_EMBEDDING_BASE_URL = "http://127.0.0.1:11434"
@@ -185,6 +187,10 @@ class HashingEmbeddingProvider:
         """Convert input texts into deterministic dense vectors using feature hashing."""
         if not texts:
             raise EmbeddingProviderError("Hashing embeddings require at least one input text.")
+        _logger.debug(
+            "Hashing texts: provider=%r model=%r count=%d",
+            self.provider_name, self.model_name, len(texts),
+        )
 
         results: list[EmbeddingResult] = []
         for text in texts:
@@ -241,6 +247,10 @@ class OllamaEmbeddingProvider:
         """Convert input texts into embedding vectors by making requests to the Ollama API."""
         if not texts:
             raise EmbeddingProviderError("Ollama embeddings require at least one input text.")
+        _logger.debug(
+            "Embedding texts: provider=%r model=%r count=%d",
+            self.provider_name, self.model_name, len(texts),
+        )
 
         normalized_inputs = [_normalize_whitespace(text) for text in texts]
         if any(not text for text in normalized_inputs):
@@ -259,6 +269,10 @@ class OllamaEmbeddingProvider:
             if len(chunks) <= 1:
                 raise
 
+            _logger.debug(
+                "Text exceeds context length; splitting: chunks=%d strategy=adaptive-halving",
+                len(chunks),
+            )
             chunk_embeddings = [self._embed_single_text(chunk) for chunk in chunks]
             return self._combine_chunk_embeddings(text, chunks, chunk_embeddings)
 
@@ -327,6 +341,10 @@ class OllamaEmbeddingProvider:
                 )
             )
 
+        _logger.debug(
+            "Ollama embeddings received: model=%r dimensions=%d count=%d",
+            self.model_name, results[0].dimensions, len(results),
+        )
         return results
 
     @staticmethod
@@ -422,6 +440,7 @@ def build_fallback_provider(settings: EmbeddingSettings) -> EmbeddingProvider | 
     if settings.fallback_provider_name == settings.provider_name:
         return None
     if settings.fallback_provider_name == "hashing":
+        _logger.debug("Building fallback embedding provider: %r", settings.fallback_provider_name)
         return HashingEmbeddingProvider(dimensions=settings.hashing_dimensions)
     raise BaldwinConfigurationError(
         f"Unsupported embedding fallback provider: {settings.fallback_provider_name}"

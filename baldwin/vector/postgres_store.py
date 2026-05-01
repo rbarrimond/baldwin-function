@@ -11,6 +11,9 @@ from psycopg import sql
 
 from baldwin.embedding import EmbeddingResult
 from baldwin.exceptions import VectorStoreError
+from baldwin.log import get_logger
+
+_logger = get_logger(__name__)
 
 
 def _vector_literal(vector: list[float]) -> str:
@@ -61,6 +64,7 @@ class PostgresVectorStore:
 
     def bootstrap(self) -> None:
         """Create the pgvector extension and required tables when absent."""
+        _logger.debug("Bootstrapping vector store schema")
         document_table = sql.Identifier(self.document_table)
         embedding_table = sql.Identifier(self.embedding_table)
 
@@ -137,7 +141,9 @@ class PostgresVectorStore:
                         )
                     )
         except psycopg.Error as exc:
+            _logger.exception("Failed to bootstrap vector store schema")
             raise VectorStoreError("Failed to bootstrap PostgreSQL vector storage.") from exc
+        _logger.info("Vector store schema bootstrap complete")
 
     def upsert_document(
         self,
@@ -145,6 +151,10 @@ class PostgresVectorStore:
         embedding: EmbeddingResult,
     ) -> VectorStoreResult:
         """Upsert a document row and refresh its embedding when the content changes."""
+        _logger.debug(
+            "Upserting vector document: document_key=%r source_type=%r",
+            document.document_key, document.source_type,
+        )
         document_table = sql.Identifier(self.document_table)
         embedding_table = sql.Identifier(self.embedding_table)
         vector_value = _vector_literal(embedding.vector)
@@ -245,6 +255,11 @@ class PostgresVectorStore:
 
                 connection.commit()
         except psycopg.Error as exc:
+            _logger.exception("Failed to persist vector document: document_key=%r", document.document_key)
             raise VectorStoreError("Failed to persist vector document data.") from exc
 
+        _logger.debug(
+            "Vector document upserted: document_key=%r inserted=%s embedding_updated=%s",
+            document.document_key, bool(inserted), embedding_updated,
+        )
         return VectorStoreResult(inserted=bool(inserted), embedding_updated=embedding_updated)

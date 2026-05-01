@@ -5,6 +5,9 @@ import importlib
 from typing import Any, cast
 
 from baldwin.exceptions import ThingsConfigurationError, ThingsServiceError
+from baldwin.log import get_logger
+
+_logger = get_logger(__name__)
 
 from .models import (
     ThingsArea,
@@ -33,6 +36,7 @@ class ThingsClient:
 
     def fetch_snapshot(self) -> ThingsSnapshot:
         """Return areas, active projects, open todos, and related notes."""
+        _logger.debug("Fetching Things snapshot: database_path=%r", self._database_path)
         things_module = self._load_things_module()
         query_kwargs = self._build_query_kwargs()
 
@@ -60,6 +64,10 @@ class ThingsClient:
         headings = tuple(self._map_heading(entry) for entry in raw_headings)
         todos = tuple(self._map_todo(entry, things_module=things_module, query_kwargs=query_kwargs) for entry in raw_todos)
         notes = self._collect_notes(projects=projects, todos=todos)
+        _logger.info(
+            "Things snapshot fetched: areas=%d projects=%d headings=%d todos=%d notes=%d",
+            len(areas), len(projects), len(headings), len(todos), len(notes),
+        )
         return ThingsSnapshot(areas=areas, projects=projects, headings=headings, todos=todos, notes=notes)
 
     def _build_query_kwargs(self) -> dict[str, str]:
@@ -69,6 +77,7 @@ class ThingsClient:
 
     @staticmethod
     def _load_things_module() -> Any:
+        _logger.debug("Loading things.py module")
         try:
             things = importlib.import_module("things")
         except ImportError as exc:
@@ -77,6 +86,7 @@ class ThingsClient:
 
     @staticmethod
     def _read_collection(raw_value: Any, *, entity_name: str) -> list[Mapping[str, Any]]:
+        _logger.debug("Reading Things collection: entity_name=%r", entity_name)
         if not isinstance(raw_value, list):
             raise ThingsServiceError(f"Things returned an invalid {entity_name} payload.")
 

@@ -263,6 +263,7 @@ class EmailIngestionService:
         incremental_sync_enabled: bool,
     ) -> FolderFetchResult:
         """Fetch the payload for one folder using its own IMAP service instance."""
+        _logger.debug("Fetching folder payload: folder_name=%r days=%d", folder_name, days)
         email_service = self._build_email_service()
         folder_status = email_service.get_folder_status(folder_name)
         stored_state = vector_store.get_mailbox_sync_state(
@@ -441,6 +442,10 @@ class EmailIngestionService:
         email_service = self._build_email_service()
         vector_store = self._build_vector_store()
         self._ensure_store_schema(vector_store)
+        _logger.info(
+            "Starting mailbox ingestion: sync_run_id=%r folders=%r days=%d",
+            sync_run_id, list(folders.folders), days,
+        )
         emails, folder_statuses, sync_modes = self._fetch_folder_payloads(
             vector_store=vector_store,
             folders=folders,
@@ -449,12 +454,16 @@ class EmailIngestionService:
             progress_callback=progress_callback,
         )
 
+        _logger.info("Fetch complete: sync_run_id=%r fetched=%d", sync_run_id, len(emails))
         normalized = self._normalize_emails(emails, progress_callback=progress_callback)
+        _logger.info("Normalize complete: sync_run_id=%r normalized=%d", sync_run_id, len(normalized))
         deduped = self.normalizer.merge_duplicates(normalized)
+        _logger.info("Dedup complete: sync_run_id=%r deduped=%d", sync_run_id, len(deduped))
         embeddings = self._embed_searchable_texts(
             [email_message.searchable_text for email_message in deduped],
             progress_callback=progress_callback,
         )
+        _logger.info("Embed complete: sync_run_id=%r embedded=%d", sync_run_id, len(embeddings))
 
         persisted: list[dict[str, Any]] = []
         for index, (normalized_email, embedding) in enumerate(zip(deduped, embeddings), start=1):
@@ -477,6 +486,7 @@ class EmailIngestionService:
             if progress_callback is not None:
                 progress_callback(ScanMailboxProgress("persist", index, len(deduped)))
 
+        _logger.info("Persist complete: sync_run_id=%r persisted=%d", sync_run_id, len(persisted))
         reconciled_missing = self._reconcile_folder_membership(
             vector_store=vector_store,
             folders=folders,
@@ -501,6 +511,14 @@ class EmailIngestionService:
 
         deleted_stale_documents = vector_store.delete_documents_without_folders()
 
+        _logger.info(
+            "Reconciliation complete: sync_run_id=%r reconciled_missing=%d",
+            sync_run_id, reconciled_missing,
+        )
+        _logger.info(
+            "Mailbox ingestion complete: sync_run_id=%r total_fetched=%d total_deduped=%d deleted_stale=%d",
+            sync_run_id, len(emails), len(deduped), deleted_stale_documents,
+        )
         return {
             "total_fetched": len(emails),
             "total_normalized": len(normalized),
@@ -597,6 +615,10 @@ class DigestDeliveryService:
         except (smtplib.SMTPException, OSError) as exc:
             raise EmailDeliveryError("Unable to send the digest email.") from exc
 
+        _logger.info(
+            "Digest email sent: to=%r from=%r subject=%r",
+            to_address, from_address, subject,
+        )
         return from_address
 
 
