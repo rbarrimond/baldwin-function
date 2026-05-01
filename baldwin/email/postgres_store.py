@@ -11,12 +11,15 @@ from psycopg import sql
 
 from baldwin.embedding import EmbeddingResult
 from baldwin.exceptions import VectorStoreError
+from baldwin.log import get_logger
 from baldwin.vector.postgres_store import (
     PostgresVectorStore,
     VectorDocument,
     VectorStoreResult,
 )
 from .vectorization import NormalizedEmail
+
+_logger = get_logger(__name__)
 
 StoreResult = VectorStoreResult
 
@@ -79,6 +82,7 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                         "ALTER TABLE document_sync_runs ADD COLUMN IF NOT EXISTS folder_uids JSONB NOT NULL DEFAULT '{}'::jsonb"
                     )
         except psycopg.Error as exc:
+            _logger.exception("Database error during email sync schema bootstrap")
             raise VectorStoreError("Failed to bootstrap PostgreSQL email sync state.") from exc
 
     @staticmethod
@@ -176,6 +180,12 @@ class PostgresEmailVectorStore(PostgresVectorStore):
 
                 connection.commit()
         except psycopg.Error as exc:
+            _logger.exception(
+                "Database error upserting mailbox sync state: user=%r host=%r folder=%r",
+                imap_user,
+                imap_host,
+                imap_folder,
+            )
             raise VectorStoreError("Failed to persist mailbox sync state.") from exc
 
     def record_document_sync(
@@ -243,6 +253,11 @@ class PostgresEmailVectorStore(PostgresVectorStore):
 
                 connection.commit()
         except psycopg.Error as exc:
+            _logger.exception(
+                "Database error recording document sync: document_key=%r sync_run_id=%r",
+                document_key,
+                sync_run_id,
+            )
             raise VectorStoreError("Failed to record document sync observation.") from exc
 
     def get_mailbox_sync_state(
@@ -274,6 +289,12 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                     )
                     row = cursor.fetchone()
         except psycopg.Error as exc:
+            _logger.exception(
+                "Database error reading mailbox sync state: user=%r host=%r folder=%r",
+                imap_user,
+                imap_host,
+                imap_folder,
+            )
             raise VectorStoreError("Failed to read mailbox sync state.") from exc
 
         if row is None:
@@ -304,6 +325,9 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                     )
                     rows = cursor.fetchall()
         except psycopg.Error as exc:
+            _logger.exception(
+                "Database error reading folder UID state: folder_name=%r", folder_name
+            )
             raise VectorStoreError("Failed to read current folder UID state.") from exc
 
         result: dict[str, int] = {}
@@ -360,6 +384,11 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                     )
                 connection.commit()
         except psycopg.Error as exc:
+            _logger.exception(
+                "Database error removing folder membership: document_key=%r folder_name=%r",
+                document_key,
+                folder_name,
+            )
             raise VectorStoreError("Failed to remove reconciled folder membership.") from exc
 
     def delete_documents_without_folders(self) -> int:
@@ -379,6 +408,7 @@ class PostgresEmailVectorStore(PostgresVectorStore):
                     deleted_count = cursor.rowcount or 0
                 connection.commit()
         except psycopg.Error as exc:
+            _logger.exception("Database error deleting stale email documents")
             raise VectorStoreError("Failed to delete stale email documents.") from exc
 
         return deleted_count

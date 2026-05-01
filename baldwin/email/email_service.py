@@ -13,6 +13,9 @@ from typing import Dict, List, Optional, Sequence
 from pydantic import BaseModel
 
 from baldwin.exceptions import EmailFetchError
+from baldwin.log import get_logger
+
+_logger = get_logger(__name__)
 
 DEFAULT_IMAP_FOLDER = "INBOX"
 IMAP_TRANSPORT_ERROR = imaplib.IMAP4.error # pylint: disable=C0103
@@ -430,6 +433,7 @@ class EmailService:
         mail: imaplib.IMAP4 | None = None
         pending_error: BaseException | None = None
         try:
+            _logger.debug("Fetching folder status: folder=%r host=%r", folder, self.imap_host)
             mail = self._connect_mailbox()
             mail.login(self.imap_user, self.imap_pass)
             return self._select_folder_status(mail, folder)
@@ -438,6 +442,11 @@ class EmailService:
             raise
         except (IMAP_TRANSPORT_ERROR, OSError) as exc:
             pending_error = exc
+            _logger.exception(
+                "IMAP transport error inspecting folder status: folder=%r host=%r",
+                folder,
+                self.imap_host,
+            )
             raise EmailFetchError(f"Failed to inspect IMAP folder state: {folder}.") from exc
         finally:
             if mail is not None:
@@ -445,7 +454,15 @@ class EmailService:
                     mail.logout()
                 except (IMAP_TRANSPORT_ERROR, OSError) as exc:
                     if pending_error is None:
+                        _logger.exception(
+                            "Failed to close IMAP session after folder status: folder=%r", folder
+                        )
                         raise EmailFetchError(CLOSE_SESSION_ERROR_MESSAGE) from exc
+                    _logger.warning(
+                        "IMAP logout failed (suppressed, pending error present): folder=%r exc=%r",
+                        folder,
+                        exc,
+                    )
 
     def fetch_emails_by_uid_range(
         self,
@@ -457,6 +474,12 @@ class EmailService:
         mail: imaplib.IMAP4 | None = None
         pending_error: BaseException | None = None
         try:
+            _logger.debug(
+                "Fetching emails by UID range: folder=%r start_uid=%d end_uid=%r",
+                folder,
+                start_uid,
+                end_uid,
+            )
             mail = self._connect_mailbox()
             mail.login(self.imap_user, self.imap_pass)
             return self._fetch_folder_emails_by_uid_range(mail, folder, start_uid, end_uid)
@@ -465,6 +488,12 @@ class EmailService:
             raise
         except (IMAP_TRANSPORT_ERROR, OSError) as exc:
             pending_error = exc
+            _logger.exception(
+                "IMAP transport error fetching UID range: folder=%r start_uid=%d end_uid=%r",
+                folder,
+                start_uid,
+                end_uid,
+            )
             raise EmailFetchError(
                 f"Failed to fetch IMAP UIDs from folder '{folder}' starting at {start_uid}."
             ) from exc
@@ -474,7 +503,17 @@ class EmailService:
                     mail.logout()
                 except (IMAP_TRANSPORT_ERROR, OSError) as exc:
                     if pending_error is None:
+                        _logger.exception(
+                            "Failed to close IMAP session after UID range fetch: folder=%r start_uid=%d",
+                            folder,
+                            start_uid,
+                        )
                         raise EmailFetchError(CLOSE_SESSION_ERROR_MESSAGE) from exc
+                    _logger.warning(
+                        "IMAP logout failed (suppressed, pending error present): folder=%r exc=%r",
+                        folder,
+                        exc,
+                    )
 
     def fetch_emails(
         self,
@@ -499,6 +538,7 @@ class EmailService:
         mail: imaplib.IMAP4 | None = None
         pending_error: BaseException | None = None
         try:
+            _logger.debug("Fetching emails: folders=%s days=%d", folder_selection, days)
             mail = self._connect_mailbox()
             mail.login(self.imap_user, self.imap_pass)
             emails: List[Email] = []
@@ -511,6 +551,11 @@ class EmailService:
             raise
         except (IMAP_TRANSPORT_ERROR, OSError) as exc:
             pending_error = exc
+            _logger.exception(
+                "IMAP transport error fetching emails: folders=%s days=%d",
+                folder_selection,
+                days,
+            )
             raise EmailFetchError(f"Failed to fetch emails from IMAP folders: {folder_selection}.") from exc
         finally:
             if mail is not None:
@@ -518,4 +563,13 @@ class EmailService:
                     mail.logout()
                 except (IMAP_TRANSPORT_ERROR, OSError) as exc:
                     if pending_error is None:
+                        _logger.exception(
+                            "Failed to close IMAP session after email fetch: folders=%s",
+                            folder_selection,
+                        )
                         raise EmailFetchError(CLOSE_SESSION_ERROR_MESSAGE) from exc
+                    _logger.warning(
+                        "IMAP logout failed (suppressed, pending error present): folders=%s exc=%r",
+                        folder_selection,
+                        exc,
+                    )

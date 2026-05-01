@@ -9,6 +9,9 @@ from email.utils import parsedate_to_datetime
 
 from baldwin.embedding import HashingEmbeddingProvider
 from baldwin.exceptions import EmailNormalizationError
+from baldwin.log import get_logger
+
+_logger = get_logger(__name__)
 
 from .email_service import Email
 
@@ -24,6 +27,7 @@ def _parse_date(raw_date: str) -> str | None:
     try:
         parsed = parsedate_to_datetime(raw_date)
     except (TypeError, ValueError, IndexError) as exc:
+        _logger.exception("Unable to parse email date: raw_date=%r", raw_date)
         raise EmailNormalizationError(
             f"Unable to normalize email sent date from value {raw_date!r}."
         ) from exc
@@ -128,6 +132,12 @@ class EmailNormalizer:
         normalized_folder = _normalize_whitespace(email_message.folder or "")
         searchable_text = self._build_searchable_text(subject, body)
         if not searchable_text:
+            _logger.warning(
+                "Email rejected during normalization — no searchable body or subject: "
+                "message_id=%r folder=%r",
+                email_message.id,
+                email_message.folder,
+            )
             raise EmailNormalizationError(
                 "Email body or subject is required for vectorization."
             )
@@ -176,6 +186,10 @@ class EmailNormalizer:
                 continue
 
             if existing.content_checksum != normalized_email.content_checksum:
+                _logger.warning(
+                    "Fingerprint collision with differing content: fingerprint=%r",
+                    normalized_email.fingerprint,
+                )
                 raise EmailNormalizationError(
                     "Conflicting normalized emails share fingerprint "
                     f"{normalized_email.fingerprint} but have different content checksums."

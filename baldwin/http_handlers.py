@@ -5,7 +5,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import imaplib
 import json
-import logging
 import os
 import re
 import smtplib
@@ -37,6 +36,9 @@ from baldwin.exceptions import (
     BaldwinValidationError,
     VectorStoreError,
 )
+from baldwin.log import get_logger
+
+_logger = get_logger(__name__)
 
 JSON_MIMETYPE = "application/json"
 MARKDOWN_MIMETYPE = "text/markdown"
@@ -633,28 +635,28 @@ class MailboxHttpHandlers:
             )
             return self.response_factory.json(summary)
         except BaldwinConfigurationError:
-            logging.exception("Configuration error in scan_mail")
+            _logger.exception("Configuration error in scan_mail")
             return self.response_factory.json(
                 {"error": INTERNAL_SERVER_ERROR_MESSAGE},
                 status_code=500,
             )
         except BaldwinValidationError as exc:
-            logging.warning("Invalid request for scan_mail: %s", exc)
+            _logger.warning("Invalid request for scan_mail: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
         except EmailFetchError as exc:
             if self._is_caused_by(exc, imaplib.IMAP4.error):
-                logging.warning("IMAP request failed for scan_mail: %s", exc)
+                _logger.warning("IMAP request failed for scan_mail: %s", exc)
                 return self.response_factory.json(
                     {"error": "Unable to read from the requested IMAP folders."},
                     status_code=502,
                 )
-            logging.exception("Unexpected email fetch error in scan_mail")
+            _logger.exception("Unexpected email fetch error in scan_mail")
             return self.response_factory.json(
                 {"error": INTERNAL_SERVER_ERROR_MESSAGE},
                 status_code=500,
             )
         except (EmbeddingProviderError, VectorStoreError) as exc:
-            logging.exception("Persistence or embedding error in scan_mail: %s", exc)
+            _logger.exception("Persistence or embedding error in scan_mail: %s", exc)
             return self.response_factory.json(
                 {"error": INTERNAL_SERVER_ERROR_MESSAGE},
                 status_code=500,
@@ -667,10 +669,10 @@ class MailboxHttpHandlers:
             summary = self.summary_service.summarize(str(data.get("body", "")))
             return self.response_factory.json({"summary": summary})
         except BaldwinValidationError as exc:
-            logging.warning("Invalid request for summarize_email: %s", exc)
+            _logger.warning("Invalid request for summarize_email: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
         except ValueError as exc:
-            logging.warning("Invalid request for summarize_email: %s", exc)
+            _logger.warning("Invalid request for summarize_email: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
 
     def build_digest(self, req: HttpRequest) -> HttpResponse:
@@ -683,10 +685,10 @@ class MailboxHttpHandlers:
             )
             return self.response_factory.markdown(digest)
         except BaldwinValidationError as exc:
-            logging.warning("Invalid request for build_digest: %s", exc)
+            _logger.warning("Invalid request for build_digest: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
         except ValueError as exc:
-            logging.warning("Invalid request for build_digest: %s", exc)
+            _logger.warning("Invalid request for build_digest: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
 
     def send_digest(self, req: HttpRequest) -> HttpResponse:
@@ -704,25 +706,25 @@ class MailboxHttpHandlers:
             from_address = self.digest_delivery_service.send(to_address, subject, content)
             return self.response_factory.json({"status": "sent", "from": from_address})
         except BaldwinConfigurationError:
-            logging.exception("Configuration error in send_digest")
+            _logger.exception("Configuration error in send_digest")
             return self.response_factory.json(
                 {"error": INTERNAL_SERVER_ERROR_MESSAGE},
                 status_code=500,
             )
         except BaldwinValidationError as exc:
-            logging.warning("Invalid request for send_digest: %s", exc)
+            _logger.warning("Invalid request for send_digest: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
         except ValueError as exc:
-            logging.warning("Invalid request for send_digest: %s", exc)
+            _logger.warning("Invalid request for send_digest: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
         except EmailDeliveryError as exc:
             if self._is_caused_by(exc, smtplib.SMTPException):
-                logging.warning("SMTP request failed for send_digest: %s", exc)
+                _logger.warning("SMTP request failed for send_digest: %s", exc)
                 return self.response_factory.json(
                     {"error": "Unable to send the digest email."},
                     status_code=502,
                 )
-            logging.exception("Unexpected email delivery error in send_digest")
+            _logger.exception("Unexpected email delivery error in send_digest")
             return self.response_factory.json(
                 {"error": INTERNAL_SERVER_ERROR_MESSAGE},
                 status_code=500,
