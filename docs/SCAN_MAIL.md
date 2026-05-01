@@ -144,9 +144,18 @@ Example payload:
 
 ```json
 {
-  "error": "Unable to read from the requested IMAP folders."
+  "error": "Unable to process one or more requested IMAP folders.",
+  "error_code": "IMAP_LOGIN_FAILED",
+  "reason_category": "auth",
+  "folders": ["INBOX", "Archive"]
 }
 ```
+
+Response field semantics:
+
+- `error_code`: Stable machine-readable IMAP failure code (`IMAP_*`) for client retry/routing logic.
+- `reason_category`: Low-cardinality remediation category (`auth`, `network`, `permissions`, `folder`, `unknown`).
+- `folders`: Requested IMAP folders associated with the failed operation.
 
 ### `500 Internal Server Error`
 
@@ -160,7 +169,7 @@ Example payload:
 }
 ```
 
-The implementation deliberately avoids leaking raw infrastructure errors through the public HTTP surface.
+The implementation deliberately avoids leaking raw infrastructure errors through the public HTTP surface. Raw provider error text, hostnames, and stack traces are kept in server logs only.
 
 ## Persistence Notes
 

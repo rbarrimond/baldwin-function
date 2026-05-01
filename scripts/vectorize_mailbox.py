@@ -15,6 +15,7 @@ if __package__ in {None, ""}:
 
 from baldwin.email import EmailFetchError, EmailNormalizer, EmailService, MailboxFolders, PostgresEmailVectorStore
 from baldwin.embedding import EmbeddingProviderError, build_embedding_service, load_embedding_settings
+from baldwin.exceptions import ImapReasonCategory
 from baldwin.vector import VectorStoreError
 
 
@@ -24,6 +25,24 @@ def _status(message: str) -> None:
 
 def _is_caused_by(exc: BaseException, expected_type: type[BaseException]) -> bool:
     return isinstance(exc.__cause__, expected_type)
+
+
+def _format_imap_failure(exc: EmailFetchError) -> str:
+    folder_summary = ", ".join(exc.folders) if exc.folders else "(none provided)"
+    remediation_hint = {
+        ImapReasonCategory.AUTH: "Verify IMAP credentials/app password.",
+        ImapReasonCategory.NETWORK: "Check IMAP connectivity and retry.",
+        ImapReasonCategory.PERMISSIONS: "Verify mailbox permissions for the selected folders.",
+        ImapReasonCategory.FOLDER: "Check folder names or mailbox folder encoding.",
+        ImapReasonCategory.UNKNOWN: "Review runtime logs for provider-side details.",
+    }[exc.reason_category]
+    return (
+        "IMAP request failed: "
+        f"error_code={exc.error_code.value} "
+        f"reason_category={exc.reason_category.value} "
+        f"folders={folder_summary}. "
+        f"{remediation_hint}"
+    )
 
 
 def _display_label(value: str, fallback: str = "(no subject)") -> str:
@@ -369,13 +388,8 @@ if __name__ == "__main__":
         print(f"Configuration error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
     except EmailFetchError as exc:
-        if _is_caused_by(exc, imaplib.IMAP4.error):
-            print(
-                "IMAP authentication failed. Check IMAP_USER or MAIL_USERNAME and "
-                "IMAP_PASSWORD or MAIL_APP_PASSWORD in local.settings.json or your environment.",
-                file=sys.stderr,
-            )
-            print(str(exc.__cause__), file=sys.stderr)
+        if exc.folders or exc.reason_category != ImapReasonCategory.UNKNOWN or _is_caused_by(exc, imaplib.IMAP4.error):
+            print(_format_imap_failure(exc), file=sys.stderr)
         else:
             print(f"Runtime error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc

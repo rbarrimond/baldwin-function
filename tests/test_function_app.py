@@ -13,6 +13,7 @@ import azure.functions as func
 
 import function_app
 from baldwin.email import EmailDeliveryError, EmailFetchError, MailboxFolders
+from baldwin.exceptions import ImapErrorCode, ImapReasonCategory
 
 
 def _json_request(method: str, url: str, payload: dict | None = None, params: dict | None = None) -> func.HttpRequest:
@@ -66,7 +67,12 @@ class FunctionAppEndpointTests(unittest.TestCase):
             try:
                 raise imaplib.IMAP4.error("invalid credentials")
             except imaplib.IMAP4.error as exc:
-                raise EmailFetchError("Failed to fetch emails from IMAP folders: INBOX, Archive.") from exc
+                raise EmailFetchError(
+                    "Failed to fetch emails from IMAP folders: INBOX, Archive.",
+                    error_code=ImapErrorCode.IMAP_LOGIN_FAILED,
+                    reason_category=ImapReasonCategory.AUTH,
+                    folders=("INBOX", "Archive"),
+                ) from exc
 
         with patch.object(function_app.HANDLERS.ingestion_service, "ingest_mailbox", side_effect=raise_imap_failure):
             response = function_app.scan_mail(
@@ -74,7 +80,15 @@ class FunctionAppEndpointTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 502)
-        self.assertEqual(json.loads(response.get_body()), {"error": "Unable to read from the requested IMAP folders."})
+        self.assertEqual(
+            json.loads(response.get_body()),
+            {
+                "error": "Unable to process one or more requested IMAP folders.",
+                "error_code": "IMAP_LOGIN_FAILED",
+                "reason_category": "auth",
+                "folders": ["INBOX", "Archive"],
+            },
+        )
 
     def test_scan_mail_passes_requested_folders_to_service(self) -> None:
         """The scan_mail endpoint should pass the requested IMAP folders to the ingestion service."""

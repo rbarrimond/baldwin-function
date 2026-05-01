@@ -4,8 +4,15 @@ import argparse
 import unittest
 from unittest.mock import patch
 
-from baldwin.email import Email
-from scripts.vectorize_mailbox import _build_progress_label, _format_chunking_status, _load_settings, _normalize_emails
+from baldwin.email import Email, EmailFetchError
+from baldwin.exceptions import ImapErrorCode, ImapReasonCategory
+from scripts.vectorize_mailbox import (
+    _build_progress_label,
+    _format_chunking_status,
+    _format_imap_failure,
+    _load_settings,
+    _normalize_emails,
+)
 
 
 class VectorizeInboxLoggingTests(unittest.TestCase):
@@ -29,6 +36,21 @@ class VectorizeInboxLoggingTests(unittest.TestCase):
         )
 
         self.assertEqual(label, "[Archive,Receipts] Subject")
+
+    def test_format_imap_failure_includes_error_context(self) -> None:
+        """IMAP failure logs should include code/category/folders context."""
+        message = _format_imap_failure(
+            EmailFetchError(
+                "Failed to fetch emails from IMAP folders.",
+                error_code=ImapErrorCode.IMAP_LOGIN_FAILED,
+                reason_category=ImapReasonCategory.AUTH,
+                folders=("INBOX", "Archive"),
+            )
+        )
+
+        self.assertIn("error_code=IMAP_LOGIN_FAILED", message)
+        self.assertIn("reason_category=auth", message)
+        self.assertIn("folders=INBOX, Archive", message)
 
 
 class VectorizeInboxSettingsTests(unittest.TestCase):

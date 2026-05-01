@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import io
+import imaplib
 import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
+from baldwin.email import EmailFetchError
+from baldwin.exceptions import ImapErrorCode, ImapReasonCategory
 from baldwin.http_handlers import ScanMailboxProgress
 from scripts.scan_mail_flow import DEFAULT_SCAN_MAIL_FLOW_MAX_WORKERS, main
 
@@ -85,6 +88,34 @@ class ScanMailFlowCliTests(unittest.TestCase):
         exit_code = main(["--max-workers", "0"])
 
         self.assertEqual(exit_code, 2)
+
+    def test_cli_reports_structured_imap_context_for_fetch_failures(self) -> None:
+        """The CLI should emit IMAP error code/category/folder context for fetch failures."""
+
+        def raise_imap_failure(days: int, folders, *, progress_callback) -> dict:
+            del days, folders, progress_callback
+            try:
+                raise imaplib.IMAP4.error("invalid credentials")
+            except imaplib.IMAP4.error as exc:
+                raise EmailFetchError(
+                    "Failed to fetch emails from IMAP folders.",
+                    error_code=ImapErrorCode.IMAP_LOGIN_FAILED,
+                    reason_category=ImapReasonCategory.AUTH,
+                    folders=("INBOX", "Archive"),
+                ) from exc
+
+        with patch("scripts.scan_mail_flow._load_runtime_environ", return_value={}):
+            with patch("scripts.scan_mail_flow.EmailIngestionService") as ingestion_service:
+                ingestion_service.return_value.ingest_mailbox.side_effect = raise_imap_failure
+                stderr = io.StringIO()
+                with redirect_stderr(stderr):
+                    exit_code = main([])
+
+        self.assertEqual(exit_code, 3)
+        output = stderr.getvalue()
+        self.assertIn("error_code=IMAP_LOGIN_FAILED", output)
+        self.assertIn("reason_category=auth", output)
+        self.assertIn("folders=INBOX, Archive", output)
 
 
 if __name__ == "__main__":

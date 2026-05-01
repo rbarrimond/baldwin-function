@@ -12,7 +12,12 @@ from typing import Dict, List, Optional, Sequence
 
 from pydantic import BaseModel
 
-from baldwin.exceptions import EmailFetchError
+from baldwin.exceptions import (
+    EmailFetchError,
+    ImapErrorCode,
+    ImapReasonCategory,
+    classify_imap_reason,
+)
 from baldwin.log import get_logger
 
 _logger = get_logger(__name__)
@@ -365,11 +370,21 @@ class EmailService:
     def _select_folder_status(self, mail: imaplib.IMAP4, folder: str) -> MailboxFolderStatus:
         status, data = mail.select(folder)
         if status != "OK":
-            raise EmailFetchError(f"Unable to select IMAP folder '{folder}'.")
+            raise EmailFetchError(
+                f"Unable to select IMAP folder '{folder}'.",
+                error_code=ImapErrorCode.IMAP_SELECT_FAILED,
+                reason_category=ImapReasonCategory.FOLDER,
+                folders=(folder,),
+            )
 
         status, uid_data = mail.uid("search", "ALL")
         if status != "OK":
-            raise EmailFetchError(f"Unable to enumerate IMAP UIDs for folder '{folder}'.")
+            raise EmailFetchError(
+                f"Unable to enumerate IMAP UIDs for folder '{folder}'.",
+                error_code=ImapErrorCode.IMAP_UID_ENUM_FAILED,
+                reason_category=ImapReasonCategory.FOLDER,
+                folders=(folder,),
+            )
 
         message_count = self._parse_int_bytes(data[0] if data else None) or 0
         return MailboxFolderStatus(
@@ -390,7 +405,12 @@ class EmailService:
 
         status, data = mail.search(None, self._build_since_query(days))
         if status != "OK":
-            raise EmailFetchError(f"Unable to search IMAP folder '{folder}'.")
+            raise EmailFetchError(
+                f"Unable to search IMAP folder '{folder}'.",
+                error_code=ImapErrorCode.IMAP_SEARCH_FAILED,
+                reason_category=ImapReasonCategory.FOLDER,
+                folders=(folder,),
+            )
 
         email_ids = data[0].split() if data and data[0] else []
         emails: List[Email] = []
@@ -414,6 +434,10 @@ class EmailService:
         if status != "OK":
             raise EmailFetchError(
                 f"Unable to search IMAP UIDs in folder '{folder}' for range {uid_range}."
+                ,
+                error_code=ImapErrorCode.IMAP_SEARCH_FAILED,
+                reason_category=ImapReasonCategory.FOLDER,
+                folders=(folder,),
             )
 
         emails: List[Email] = []
@@ -447,7 +471,12 @@ class EmailService:
                 folder,
                 self.imap_host,
             )
-            raise EmailFetchError(f"Failed to inspect IMAP folder state: {folder}.") from exc
+            raise EmailFetchError(
+                f"Failed to inspect IMAP folder state: {folder}.",
+                error_code=ImapErrorCode.IMAP_FOLDER_STATUS_FAILED,
+                reason_category=classify_imap_reason(str(exc)),
+                folders=(folder,),
+            ) from exc
         finally:
             if mail is not None:
                 try:
@@ -457,7 +486,12 @@ class EmailService:
                         _logger.exception(
                             "Failed to close IMAP session after folder status: folder=%r", folder
                         )
-                        raise EmailFetchError(CLOSE_SESSION_ERROR_MESSAGE) from exc
+                        raise EmailFetchError(
+                            CLOSE_SESSION_ERROR_MESSAGE,
+                            error_code=ImapErrorCode.IMAP_REQUEST_FAILED,
+                            reason_category=classify_imap_reason(str(exc)),
+                            folders=(folder,),
+                        ) from exc
                     _logger.warning(
                         "IMAP logout failed (suppressed, pending error present): folder=%r exc=%r",
                         folder,
@@ -495,7 +529,10 @@ class EmailService:
                 end_uid,
             )
             raise EmailFetchError(
-                f"Failed to fetch IMAP UIDs from folder '{folder}' starting at {start_uid}."
+                f"Failed to fetch IMAP UIDs from folder '{folder}' starting at {start_uid}.",
+                error_code=ImapErrorCode.IMAP_UID_ENUM_FAILED,
+                reason_category=classify_imap_reason(str(exc)),
+                folders=(folder,),
             ) from exc
         finally:
             if mail is not None:
@@ -508,7 +545,12 @@ class EmailService:
                             folder,
                             start_uid,
                         )
-                        raise EmailFetchError(CLOSE_SESSION_ERROR_MESSAGE) from exc
+                        raise EmailFetchError(
+                            CLOSE_SESSION_ERROR_MESSAGE,
+                            error_code=ImapErrorCode.IMAP_REQUEST_FAILED,
+                            reason_category=classify_imap_reason(str(exc)),
+                            folders=(folder,),
+                        ) from exc
                     _logger.warning(
                         "IMAP logout failed (suppressed, pending error present): folder=%r exc=%r",
                         folder,
@@ -556,7 +598,12 @@ class EmailService:
                 folder_selection,
                 days,
             )
-            raise EmailFetchError(f"Failed to fetch emails from IMAP folders: {folder_selection}.") from exc
+            raise EmailFetchError(
+                f"Failed to fetch emails from IMAP folders: {folder_selection}.",
+                error_code=ImapErrorCode.IMAP_REQUEST_FAILED,
+                reason_category=classify_imap_reason(str(exc)),
+                folders=folder_selection.folders,
+            ) from exc
         finally:
             if mail is not None:
                 try:
@@ -567,7 +614,12 @@ class EmailService:
                             "Failed to close IMAP session after email fetch: folders=%s",
                             folder_selection,
                         )
-                        raise EmailFetchError(CLOSE_SESSION_ERROR_MESSAGE) from exc
+                        raise EmailFetchError(
+                            CLOSE_SESSION_ERROR_MESSAGE,
+                            error_code=ImapErrorCode.IMAP_REQUEST_FAILED,
+                            reason_category=classify_imap_reason(str(exc)),
+                            folders=folder_selection.folders,
+                        ) from exc
                     _logger.warning(
                         "IMAP logout failed (suppressed, pending error present): folders=%s exc=%r",
                         folder_selection,

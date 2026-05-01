@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0 - 2026-05-01
+
+- Replaced the generic `scan-mail` IMAP `502` response body with structured, client-actionable context: `error_code`, `reason_category`, and `folders`.
+- Added shared IMAP failure classification metadata on `EmailFetchError` so HTTP and script surfaces expose consistent, sanitized diagnostics.
+- Updated scan-mail and mailbox-vectorization script messaging plus regression coverage/documentation to align with the new IMAP error contract.
+
 ## 0.5.8 - 2026-04-27
 
 - Added a dedicated `scan-mail-flow` CLI that runs the real `scan-mail` ingestion path with explicit `days`, folder, and worker-count inputs instead of the older mailbox-vectorization flow.

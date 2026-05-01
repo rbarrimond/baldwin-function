@@ -16,8 +16,8 @@ if __package__ in {None, ""}:
 from baldwin.email import DEFAULT_IMAP_FOLDER, EmailFetchError, MailboxFolders
 from baldwin.embedding import EmbeddingProviderError
 from baldwin.exceptions import (
-    BaldwinConfigurationError,
     BaldwinValidationError,
+    ImapReasonCategory,
     VectorStoreError,
 )
 from baldwin.http_handlers import EmailIngestionService, EnvironmentSettings, ScanMailboxProgress
@@ -55,6 +55,24 @@ def _render_progress(update: ScanMailboxProgress, *, verbose: bool) -> None:
 
 def _is_caused_by(exc: BaseException, expected_type: type[BaseException]) -> bool:
     return isinstance(exc.__cause__, expected_type)
+
+
+def _format_imap_failure(exc: EmailFetchError) -> str:
+    folder_summary = ", ".join(exc.folders) if exc.folders else "(none provided)"
+    remediation_hint = {
+        ImapReasonCategory.AUTH: "Verify IMAP credentials/app password.",
+        ImapReasonCategory.NETWORK: "Check IMAP host connectivity and retry.",
+        ImapReasonCategory.PERMISSIONS: "Verify mailbox permissions for the requested folders.",
+        ImapReasonCategory.FOLDER: "Check folder names or mailbox folder encoding.",
+        ImapReasonCategory.UNKNOWN: "Review server logs for additional diagnostics.",
+    }[exc.reason_category]
+    return (
+        "IMAP request failed: "
+        f"error_code={exc.error_code.value} "
+        f"reason_category={exc.reason_category.value} "
+        f"folders={folder_summary}. "
+        f"{remediation_hint}"
+    )
 
 
 def _load_runtime_environ(*, verbose: bool) -> dict[str, str]:
@@ -140,12 +158,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(json.dumps(summary, indent=2))
         return 0
-    except (ValueError, BaldwinConfigurationError, BaldwinValidationError) as exc:
+    except (ValueError, BaldwinValidationError) as exc:
         _status(str(exc), verbose=True)
         return 2
     except EmailFetchError as exc:
-        if _is_caused_by(exc, imaplib.IMAP4.error):
-            _status("Unable to read from the requested IMAP folders.", verbose=True)
+        if exc.folders or exc.reason_category != ImapReasonCategory.UNKNOWN or _is_caused_by(exc, imaplib.IMAP4.error):
+            _status(_format_imap_failure(exc), verbose=True)
             return 3
         _status(f"Unexpected email fetch error: {exc}", verbose=True)
         return 4

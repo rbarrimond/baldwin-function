@@ -34,6 +34,7 @@ from baldwin.embedding import (
 from baldwin.exceptions import (
     BaldwinConfigurationError,
     BaldwinValidationError,
+    ImapReasonCategory,
     VectorStoreError,
 )
 from baldwin.log import get_logger
@@ -626,6 +627,22 @@ class MailboxHttpHandlers:
     ) -> bool:
         return isinstance(exc.__cause__, expected_type)
 
+    @staticmethod
+    def _is_imap_fetch_failure(exc: EmailFetchError) -> bool:
+        return bool(exc.folders) or exc.reason_category != ImapReasonCategory.UNKNOWN or isinstance(
+            exc.__cause__, imaplib.IMAP4.error
+        )
+
+    @staticmethod
+    def _imap_fetch_failure_payload(exc: EmailFetchError) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "error": "Unable to process one or more requested IMAP folders.",
+            "error_code": exc.error_code.value,
+            "reason_category": exc.reason_category.value,
+            "folders": list(exc.folders),
+        }
+        return payload
+
     def scan_mail(self, req: HttpRequest) -> HttpResponse:
         """Handle a request to scan mailbox folders and persist email content."""
         try:
@@ -645,10 +662,10 @@ class MailboxHttpHandlers:
             _logger.warning("Invalid request for scan_mail: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
         except EmailFetchError as exc:
-            if self._is_caused_by(exc, imaplib.IMAP4.error):
+            if self._is_imap_fetch_failure(exc):
                 _logger.warning("IMAP request failed for scan_mail: %s", exc)
                 return self.response_factory.json(
-                    {"error": "Unable to read from the requested IMAP folders."},
+                    self._imap_fetch_failure_payload(exc),
                     status_code=502,
                 )
             _logger.exception("Unexpected email fetch error in scan_mail")
