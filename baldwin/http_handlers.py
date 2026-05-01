@@ -282,6 +282,7 @@ class EmailIngestionService:
         )
 
         if has_valid_cursor:
+            assert last_synced_uid is not None
             emails: list[Any] = []
             if folder_status.uidnext is not None and last_synced_uid + 1 < folder_status.uidnext:
                 emails = email_service.fetch_emails_by_uid_range(
