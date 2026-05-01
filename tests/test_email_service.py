@@ -188,6 +188,24 @@ class EmailServiceConnectionTests(unittest.TestCase):
         self.assertEqual(mail.uid.call_args.args, ("search", "ALL"))
 
     @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
+    def test_get_folder_status_quotes_mailbox_names_with_spaces(self, imap4_ssl: Mock) -> None:
+        """Mailbox names with spaces should be quoted before SELECT."""
+        mail = Mock()
+        mail.select.return_value = ("OK", [b"1"])
+        mail.uid.return_value = ("OK", [b"101"])
+        mail.response.side_effect = [
+            (b"UIDVALIDITY", [b"999"]),
+            (b"UIDNEXT", [b"102"]),
+        ]
+        imap4_ssl.return_value = mail
+        service = EmailService("user@example.com", "password")
+
+        status = service.get_folder_status("Kids School")
+
+        self.assertEqual(status.folder, "Kids School")
+        self.assertEqual(mail.select.call_args.args[0], '"Kids School"')
+
+    @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
     def test_fetch_emails_by_uid_range_sets_imap_uid_on_messages(self, imap4_ssl: Mock) -> None:
         """UID-based fetch should preserve the server UID on parsed email payloads."""
         message = EmailMessage()

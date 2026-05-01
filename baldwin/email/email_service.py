@@ -242,6 +242,14 @@ class EmailService:
         return tuple(parsed_values)
 
     @staticmethod
+    def _format_mailbox_argument(folder: str) -> str:
+        """Quote mailbox names when the raw value would be invalid IMAP syntax."""
+        if re.search(r'[\s"\\]', folder):
+            escaped_folder = folder.replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped_folder}"'
+        return folder
+
+    @staticmethod
     def _deduplicate_ordered(values: Sequence[str]) -> list[str]:
         ordered: list[str] = []
         for value in values:
@@ -368,7 +376,7 @@ class EmailService:
         return parsed_messages
 
     def _select_folder_status(self, mail: imaplib.IMAP4, folder: str) -> MailboxFolderStatus:
-        status, data = mail.select(folder)
+        status, data = mail.select(self._format_mailbox_argument(folder))
         if status != "OK":
             raise EmailFetchError(
                 f"Unable to select IMAP folder '{folder}'.",
