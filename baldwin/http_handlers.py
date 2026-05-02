@@ -466,16 +466,9 @@ class EmailIngestionService:
         _logger.info("Embed complete: sync_run_id=%r embedded=%d", sync_run_id, len(embeddings))
 
         persisted: list[dict[str, Any]] = []
-        for index, (normalized_email, embedding) in enumerate(zip(deduped, embeddings), start=1):
-            store_result, document_id = vector_store.upsert_email(normalized_email, embedding)
-            vector_store.record_document_sync(
-                document_key=normalized_email.fingerprint,
-                sync_run_id=sync_run_id,
-                folder_names=normalized_email.folders,
-                folder_uids=normalized_email.folder_uids,
-                last_seen_at=observed_at,
-                document_id=document_id,
-            )
+        batch_results = vector_store.upsert_emails_batch(deduped, embeddings)
+        sync_records: list[dict[str, Any]] = []
+        for normalized_email, (store_result, document_id) in zip(deduped, batch_results):
             persisted.append(
                 {
                     "fingerprint": normalized_email.fingerprint,
@@ -484,8 +477,23 @@ class EmailIngestionService:
                     "embedding_updated": store_result.embedding_updated,
                 }
             )
-            if progress_callback is not None:
-                progress_callback(ScanMailboxProgress("persist", index, len(deduped)))
+            sync_records.append(
+                {
+                    "document_key": normalized_email.fingerprint,
+                    "document_id": document_id,
+                    "folder_names": normalized_email.folders,
+                    "folder_uids": normalized_email.folder_uids,
+                }
+            )
+
+        vector_store.record_document_syncs_batch(
+            sync_records,
+            sync_run_id=sync_run_id,
+            last_seen_at=observed_at,
+        )
+
+        if progress_callback is not None:
+            progress_callback(ScanMailboxProgress("persist", len(persisted), len(deduped)))
 
         _logger.info("Persist complete: sync_run_id=%r persisted=%d", sync_run_id, len(persisted))
         reconciled_missing = self._reconcile_folder_membership(

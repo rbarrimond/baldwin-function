@@ -14,20 +14,18 @@ class PostgresVectorStoreTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         """Reset the global pool after each test."""
-        PostgresVectorStore._pool = None  # noqa: W0212  (reset pool for test isolation)
+        PostgresVectorStore._pool = None  # pylint: disable=protected-access  # noqa: SLF001
 
     @patch("baldwin.vector.postgres_store.ConnectionPool")
     @patch("baldwin.vector.postgres_store.psycopg.connect")
-    def test_bootstrap_executes_schema_creation_without_format_errors(self, connect: Mock, pool_class: Mock) -> None:
+    def test_bootstrap_executes_schema_creation_without_format_errors(self, _connect: Mock, pool_class: Mock) -> None:
         """Bootstrap should execute all schema statements without raising SQL format errors."""
         cursor = MagicMock()
         connection = MagicMock()
         connection.cursor.return_value.__enter__.return_value = cursor
         connection.cursor.return_value.__exit__.return_value = None
-        connect.return_value.__enter__.return_value = connection
-        connect.return_value.__exit__.return_value = None
-
-        # Mock the pool class
+        _connect.return_value.__enter__.return_value = connection
+        _connect.return_value.__exit__.return_value = None
         pool_class.return_value = MagicMock()
 
         store = PostgresVectorStore(
@@ -43,7 +41,7 @@ class PostgresVectorStoreTests(unittest.TestCase):
 
     @patch("baldwin.vector.postgres_store.ConnectionPool")
     @patch("baldwin.vector.postgres_store.psycopg.connect")
-    def test_upsert_document_targets_provider_and_model_identity(self, connect: Mock, pool_class: Mock) -> None:
+    def test_upsert_document_targets_provider_and_model_identity(self, _connect: Mock, pool_class: Mock) -> None:
         """Upserts should target a single provider/model space per document."""
         cursor = MagicMock()
         cursor.fetchone.side_effect = [(123, True), (True,)]
@@ -91,10 +89,10 @@ class PostgresVectorStoreTests(unittest.TestCase):
 
     @patch("baldwin.vector.postgres_store.ConnectionPool")
     @patch("baldwin.vector.postgres_store.psycopg.connect")
-    def test_bootstrap_wraps_database_errors_with_causality(self, _connect: Mock, pool_class: Mock) -> None:
+    def test_bootstrap_wraps_database_errors_with_causality(self, connect: Mock, pool_class: Mock) -> None:
         """Bootstrap should translate psycopg failures into the shared vector-store error."""
         pool_class.return_value = MagicMock()
-        _connect.side_effect = psycopg.OperationalError("db unavailable")
+        connect.side_effect = psycopg.OperationalError("db unavailable")
         store = PostgresVectorStore(database_url="postgresql://localhost/test")
 
         with self.assertRaises(VectorStoreError) as captured:
@@ -142,6 +140,65 @@ class PostgresVectorStoreTests(unittest.TestCase):
 
         self.assertEqual(str(captured.exception), "Failed to upsert vector document metadata.")
         self.assertIsNone(captured.exception.__cause__)
+
+    @patch("baldwin.vector.postgres_store.ConnectionPool")
+    @patch("baldwin.vector.postgres_store.psycopg.connect")
+    def test_upsert_documents_batch_reuses_single_connection(self, _connect: Mock, pool_class: Mock) -> None:
+        """Batch upserts should acquire one connection and commit after each document."""
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [(1, True), (True,), (2, True), (True,)]
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value = cursor
+        connection.cursor.return_value.__exit__.return_value = None
+
+        pool_instance = MagicMock()
+        pool_instance.getconn.return_value = connection
+        pool_class.return_value = pool_instance
+
+        store = PostgresVectorStore(database_url="postgresql://localhost/test")
+
+        doc = VectorDocument(
+            document_key="doc-{n}",
+            source_type="email",
+            source_id="msg-{n}",
+            title="Subject",
+            body="Body",
+            searchable_text="Subject\n\nBody",
+            content_checksum="checksum-{n}",
+            metadata={},
+        )
+        emb = EmbeddingResult(
+            vector=[0.1, 0.2, 0.3],
+            provider="ollama",
+            model_name="qllama/bge-small-en-v1.5",
+            dimensions=3,
+            metadata={},
+        )
+
+        results = store.upsert_documents_batch([doc, doc], [emb, emb])
+
+        # Pool acquired once, returned once
+        pool_instance.getconn.assert_called_once()
+        pool_instance.putconn.assert_called_once_with(connection)
+        # Committed once per document
+        self.assertEqual(connection.commit.call_count, 2)
+        self.assertEqual(len(results), 2)
+        result0, doc_id_0 = results[0]
+        self.assertTrue(result0.inserted)
+        self.assertEqual(doc_id_0, 1)
+
+    @patch("baldwin.vector.postgres_store.ConnectionPool")
+    @patch("baldwin.vector.postgres_store.psycopg.connect")
+    def test_upsert_documents_batch_returns_empty_for_empty_input(self, _connect: Mock, pool_class: Mock) -> None:
+        """Batch upsert with no documents should return an empty list without touching the pool."""
+        pool_instance = MagicMock()
+        pool_class.return_value = pool_instance
+
+        store = PostgresVectorStore(database_url="postgresql://localhost/test")
+        results = store.upsert_documents_batch([], [])
+
+        pool_instance.getconn.assert_not_called()
+        self.assertEqual(results, [])
 
 
 if __name__ == "__main__":

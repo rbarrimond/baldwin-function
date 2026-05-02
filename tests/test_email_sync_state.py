@@ -266,10 +266,9 @@ class EmailIngestionServiceSyncTests(unittest.TestCase):
             )
         ]
         mock_store = MagicMock()
-        mock_store.upsert_email.return_value = (
-            MagicMock(inserted=True, embedding_updated=True),
-            123,  # document_id
-        )
+        mock_store.upsert_emails_batch.return_value = [
+            (MagicMock(inserted=True, embedding_updated=True), 123)
+        ]
         mock_store.get_mailbox_sync_state.return_value = {
             "uidvalidity": 999,
             "last_synced_uid": 101,
@@ -304,7 +303,7 @@ class EmailIngestionServiceSyncTests(unittest.TestCase):
         mock_store.bootstrap.assert_called_once_with()
         self.assertEqual(fetch_emails.call_count, 0)
         self.assertEqual(fetch_emails_by_uid_range.call_count, 2)
-        self.assertEqual(mock_store.record_document_sync.call_count, 4)
+        self.assertEqual(mock_store.record_document_syncs_batch.call_count, 2)
         self.assertEqual(mock_store.remove_folder_membership.call_count, 2)
         self.assertEqual(mock_store.upsert_mailbox_sync_state.call_count, 2)
         self.assertEqual(first_result["reconciled_missing"], 1)

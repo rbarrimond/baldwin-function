@@ -123,6 +123,85 @@ class PostgresEmailVectorStore(PostgresVectorStore):
         """
         return self.upsert_document(self.to_document(normalized_email), embedding)
 
+    def upsert_emails_batch(
+        self,
+        normalized_emails: list[NormalizedEmail],
+        embeddings: list[EmbeddingResult],
+    ) -> list[tuple[VectorStoreResult, int]]:
+        """Upsert multiple emails using a single pooled connection.
+
+        Returns:
+            List of (VectorStoreResult, document_id) in the same order as inputs.
+        """
+        return self.upsert_documents_batch(
+            [self.to_document(email) for email in normalized_emails],
+            embeddings,
+        )
+
+    def record_document_syncs_batch(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        sync_run_id: str,
+        last_seen_at: datetime | None = None,
+        was_present_in_mailbox: bool = True,
+    ) -> None:
+        """Record multiple document sync observations in a single connection.
+
+        Each record dict must contain: document_id (int), document_key (str),
+        folder_names (list[str]), folder_uids (dict[str, int]).
+        """
+        if not records:
+            return
+
+        observed_at = last_seen_at or datetime.now(UTC)
+
+        try:
+            with psycopg.connect(self.database_url) as connection:
+                with connection.cursor() as cursor:
+                    for record in records:
+                        cursor.execute(
+                            """
+                            INSERT INTO document_sync_runs (
+                                document_id,
+                                sync_run_id,
+                                was_present_in_mailbox,
+                                folder_names,
+                                folder_uids,
+                                last_seen_at
+                            )
+                            VALUES (
+                                %(document_id)s,
+                                %(sync_run_id)s,
+                                %(was_present_in_mailbox)s,
+                                %(folder_names)s::jsonb,
+                                %(folder_uids)s::jsonb,
+                                %(last_seen_at)s
+                            )
+                            ON CONFLICT (document_id, sync_run_id) DO UPDATE SET
+                                was_present_in_mailbox = EXCLUDED.was_present_in_mailbox,
+                                folder_names = EXCLUDED.folder_names,
+                                folder_uids = EXCLUDED.folder_uids,
+                                last_seen_at = EXCLUDED.last_seen_at
+                            """,
+                            {
+                                "document_id": record["document_id"],
+                                "sync_run_id": sync_run_id,
+                                "was_present_in_mailbox": was_present_in_mailbox,
+                                "folder_names": json.dumps(record["folder_names"]),
+                                "folder_uids": json.dumps(record.get("folder_uids") or {}),
+                                "last_seen_at": observed_at,
+                            },
+                        )
+                connection.commit()
+        except psycopg.Error as exc:
+            _logger.exception(
+                "Database error recording document sync batch: sync_run_id=%r count=%d",
+                sync_run_id,
+                len(records),
+            )
+            raise VectorStoreError("Failed to record document sync observations.") from exc
+
     def upsert_mailbox_sync_state(
         self,
         *,
