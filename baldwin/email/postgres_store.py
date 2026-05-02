@@ -115,8 +115,12 @@ class PostgresEmailVectorStore(PostgresVectorStore):
         self,
         normalized_email: NormalizedEmail,
         embedding: EmbeddingResult,
-    ) -> VectorStoreResult:
-        """Upsert an email by delegating to the generic document store."""
+    ) -> tuple[VectorStoreResult, int]:
+        """Upsert an email by delegating to the generic document store.
+        
+        Returns:
+            Tuple of (VectorStoreResult, document_id) for batch sync recording.
+        """
         return self.upsert_document(self.to_document(normalized_email), embedding)
 
     def upsert_mailbox_sync_state(
@@ -197,26 +201,38 @@ class PostgresEmailVectorStore(PostgresVectorStore):
         folder_uids: dict[str, int] | None = None,
         last_seen_at: datetime | None = None,
         was_present_in_mailbox: bool = True,
+        document_id: int | None = None,
     ) -> None:
-        """Record that a persisted document was observed in a specific sync run."""
+        """Record that a persisted document was observed in a specific sync run.
+        
+        Args:
+            document_key: The unique document key (used for fallback lookup if document_id not provided)
+            sync_run_id: UUID of the sync run
+            folder_names: List of IMAP folder names containing this document
+            folder_uids: Mapping of folder names to IMAP UIDs
+            last_seen_at: Timestamp of last observation (defaults to now)
+            was_present_in_mailbox: Whether the document was present (True) or removed (False)
+            document_id: Pre-resolved document ID (optional; if None, will query by document_key)
+        """
         observed_at = last_seen_at or datetime.now(UTC)
 
         try:
             with psycopg.connect(self.database_url) as connection:
                 with connection.cursor() as cursor:
-                    cursor.execute(
-                        sql.SQL(
-                            "SELECT id FROM {document_table} WHERE document_key = %(document_key)s"
-                        ).format(document_table=sql.Identifier(self.document_table)),
-                        {"document_key": document_key},
-                    )
-                    row = cursor.fetchone()
-                    if row is None:
-                        raise VectorStoreError(
-                            f"Unable to record sync state for unknown document_key {document_key!r}."
+                    # If document_id not provided, look it up (backward compatible)
+                    if document_id is None:
+                        cursor.execute(
+                            sql.SQL(
+                                "SELECT id FROM {document_table} WHERE document_key = %(document_key)s"
+                            ).format(document_table=sql.Identifier(self.document_table)),
+                            {"document_key": document_key},
                         )
-
-                    document_id = row[0]
+                        row = cursor.fetchone()
+                        if row is None:
+                            raise VectorStoreError(
+                                f"Unable to record sync state for unknown document_key {document_key!r}."
+                            )
+                        document_id = row[0]
                     cursor.execute(
                         """
                         INSERT INTO document_sync_runs (

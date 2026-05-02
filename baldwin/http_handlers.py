@@ -467,13 +467,14 @@ class EmailIngestionService:
 
         persisted: list[dict[str, Any]] = []
         for index, (normalized_email, embedding) in enumerate(zip(deduped, embeddings), start=1):
-            store_result = vector_store.upsert_email(normalized_email, embedding)
+            store_result, document_id = vector_store.upsert_email(normalized_email, embedding)
             vector_store.record_document_sync(
                 document_key=normalized_email.fingerprint,
                 sync_run_id=sync_run_id,
                 folder_names=normalized_email.folders,
                 folder_uids=normalized_email.folder_uids,
                 last_seen_at=observed_at,
+                document_id=document_id,
             )
             persisted.append(
                 {

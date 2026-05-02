@@ -271,7 +271,7 @@ def _process_email(
     if args.dry_run:
         return False, False, True
 
-    result = store.upsert_email(normalized_email, embedding_result.embedding)
+    result, _ = store.upsert_email(normalized_email, embedding_result.embedding)
     return result.inserted, result.embedding_updated, False
 
 

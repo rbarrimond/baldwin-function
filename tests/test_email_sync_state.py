@@ -266,7 +266,10 @@ class EmailIngestionServiceSyncTests(unittest.TestCase):
             )
         ]
         mock_store = MagicMock()
-        mock_store.upsert_email.return_value = MagicMock(inserted=True, embedding_updated=True)
+        mock_store.upsert_email.return_value = (
+            MagicMock(inserted=True, embedding_updated=True),
+            123,  # document_id
+        )
         mock_store.get_mailbox_sync_state.return_value = {
             "uidvalidity": 999,
             "last_synced_uid": 101,

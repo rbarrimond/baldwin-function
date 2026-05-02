@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
+import threading
 
 import psycopg
 from psycopg import sql
+from psycopg_pool import ConnectionPool
 
 from baldwin.embedding import EmbeddingResult
 from baldwin.exceptions import VectorStoreError
@@ -45,6 +47,9 @@ class VectorStoreResult:
 class PostgresVectorStore:
     """Stores generic vectorized documents in PostgreSQL with pgvector."""
 
+    _pool: ClassVar[ConnectionPool | None] = None
+    _pool_lock: ClassVar[threading.Lock] = threading.Lock()
+
     def __init__(
         self,
         database_url: str,
@@ -61,6 +66,41 @@ class PostgresVectorStore:
         self.database_url = database_url
         self.document_table = document_table
         self.embedding_table = embedding_table
+        self._ensure_pool()
+
+    def _ensure_pool(self) -> None:
+        """Ensure process-global connection pool is initialized (thread-safe)."""
+        if PostgresVectorStore._pool is not None:
+            return
+
+        with PostgresVectorStore._pool_lock:
+            if PostgresVectorStore._pool is not None:
+                return
+
+            _logger.debug("Initializing connection pool for %r", self.database_url)
+            try:
+                PostgresVectorStore._pool = ConnectionPool(
+                    self.database_url,
+                    min_size=2,
+                    max_size=20,
+                    timeout=30,
+                )
+            except Exception as exc:
+                _logger.exception("Failed to initialize connection pool")
+                raise VectorStoreError("Failed to create database connection pool.") from exc
+
+    @staticmethod
+    def _get_connection() -> Any:
+        """Get a connection from the pool."""
+        if PostgresVectorStore._pool is None:
+            raise VectorStoreError("Connection pool not initialized.")
+        return PostgresVectorStore._pool.getconn()
+
+    @staticmethod
+    def _return_connection(connection: Any) -> None:
+        """Return a connection to the pool."""
+        if PostgresVectorStore._pool is not None:
+            PostgresVectorStore._pool.putconn(connection)
 
     def bootstrap(self) -> None:
         """Create the pgvector extension and required tables when absent."""
@@ -149,8 +189,13 @@ class PostgresVectorStore:
         self,
         document: VectorDocument,
         embedding: EmbeddingResult,
-    ) -> VectorStoreResult:
-        """Upsert a document row and refresh its embedding when the content changes."""
+    ) -> tuple[VectorStoreResult, int]:
+        """Upsert a document row and refresh its embedding when the content changes.
+        
+        Returns:
+            Tuple of (VectorStoreResult, document_id) where document_id can be used
+            for batch sync recording operations.
+        """
         _logger.debug(
             "Upserting vector document: document_key=%r source_type=%r",
             document.document_key, document.source_type,
@@ -159,107 +204,109 @@ class PostgresVectorStore:
         embedding_table = sql.Identifier(self.embedding_table)
         vector_value = _vector_literal(embedding.vector)
 
+        connection = self._get_connection()
         try:
-            with psycopg.connect(self.database_url) as connection:
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        sql.SQL(
-                            """
-                            INSERT INTO {document_table} (
-                                document_key,
-                                source_type,
-                                source_id,
-                                title,
-                                body,
-                                searchable_text,
-                                metadata,
-                                content_checksum
-                            )
-                            VALUES (
-                                %(document_key)s,
-                                %(source_type)s,
-                                %(source_id)s,
-                                %(title)s,
-                                %(body)s,
-                                %(searchable_text)s,
-                                %(metadata)s::jsonb,
-                                %(content_checksum)s
-                            )
-                            ON CONFLICT (document_key) DO UPDATE SET
-                                source_type = EXCLUDED.source_type,
-                                source_id = EXCLUDED.source_id,
-                                title = EXCLUDED.title,
-                                body = EXCLUDED.body,
-                                searchable_text = EXCLUDED.searchable_text,
-                                metadata = EXCLUDED.metadata,
-                                content_checksum = EXCLUDED.content_checksum,
-                                updated_at = NOW()
-                            RETURNING id, (xmax = 0) AS inserted
-                            """
-                        ).format(document_table=document_table),
-                        {
-                            "document_key": document.document_key,
-                            "source_type": document.source_type,
-                            "source_id": document.source_id,
-                            "title": document.title,
-                            "body": document.body,
-                            "searchable_text": document.searchable_text,
-                            "metadata": json.dumps(document.metadata),
-                            "content_checksum": document.content_checksum,
-                        },
-                    )
-                    document_row = cursor.fetchone()
-                    if document_row is None:
-                        raise VectorStoreError("Failed to upsert vector document metadata.")
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    sql.SQL(
+                        """
+                        INSERT INTO {document_table} (
+                            document_key,
+                            source_type,
+                            source_id,
+                            title,
+                            body,
+                            searchable_text,
+                            metadata,
+                            content_checksum
+                        )
+                        VALUES (
+                            %(document_key)s,
+                            %(source_type)s,
+                            %(source_id)s,
+                            %(title)s,
+                            %(body)s,
+                            %(searchable_text)s,
+                            %(metadata)s::jsonb,
+                            %(content_checksum)s
+                        )
+                        ON CONFLICT (document_key) DO UPDATE SET
+                            source_type = EXCLUDED.source_type,
+                            source_id = EXCLUDED.source_id,
+                            title = EXCLUDED.title,
+                            body = EXCLUDED.body,
+                            searchable_text = EXCLUDED.searchable_text,
+                            metadata = EXCLUDED.metadata,
+                            content_checksum = EXCLUDED.content_checksum,
+                            updated_at = NOW()
+                        RETURNING id, (xmax = 0) AS inserted
+                        """
+                    ).format(document_table=document_table),
+                    {
+                        "document_key": document.document_key,
+                        "source_type": document.source_type,
+                        "source_id": document.source_id,
+                        "title": document.title,
+                        "body": document.body,
+                        "searchable_text": document.searchable_text,
+                        "metadata": json.dumps(document.metadata),
+                        "content_checksum": document.content_checksum,
+                    },
+                )
+                document_row = cursor.fetchone()
+                if document_row is None:
+                    raise VectorStoreError("Failed to upsert vector document metadata.")
 
-                    document_id, inserted = document_row
-                    cursor.execute(
-                        sql.SQL(
-                            """
-                            INSERT INTO {embedding_table} (
-                                document_id,
-                                provider,
-                                model_name,
-                                dimensions,
-                                embedding,
-                                content_checksum
-                            )
-                            VALUES (
-                                %(document_id)s,
-                                %(provider)s,
-                                %(model_name)s,
-                                %(dimensions)s,
-                                %(embedding)s::vector,
-                                %(content_checksum)s
-                            )
-                            ON CONFLICT (document_id, provider, model_name) DO UPDATE SET
-                                dimensions = EXCLUDED.dimensions,
-                                embedding = EXCLUDED.embedding,
-                                content_checksum = EXCLUDED.content_checksum,
-                                updated_at = NOW()
-                            WHERE {embedding_table}.content_checksum IS DISTINCT FROM EXCLUDED.content_checksum
-                               OR {embedding_table}.dimensions IS DISTINCT FROM EXCLUDED.dimensions
-                            RETURNING TRUE
-                            """
-                        ).format(embedding_table=embedding_table),
-                        {
-                            "document_id": document_id,
-                            "provider": embedding.provider,
-                            "model_name": embedding.model_name,
-                            "dimensions": embedding.dimensions,
-                            "embedding": vector_value,
-                            "content_checksum": document.content_checksum,
-                        },
-                    )
-                    embedding_updated = cursor.fetchone() is not None
+                document_id, inserted = document_row
+                cursor.execute(
+                    sql.SQL(
+                        """
+                        INSERT INTO {embedding_table} (
+                            document_id,
+                            provider,
+                            model_name,
+                            dimensions,
+                            embedding,
+                            content_checksum
+                        )
+                        VALUES (
+                            %(document_id)s,
+                            %(provider)s,
+                            %(model_name)s,
+                            %(dimensions)s,
+                            %(embedding)s::vector,
+                            %(content_checksum)s
+                        )
+                        ON CONFLICT (document_id, provider, model_name) DO UPDATE SET
+                            dimensions = EXCLUDED.dimensions,
+                            embedding = EXCLUDED.embedding,
+                            content_checksum = EXCLUDED.content_checksum,
+                            updated_at = NOW()
+                        WHERE {embedding_table}.content_checksum IS DISTINCT FROM EXCLUDED.content_checksum
+                           OR {embedding_table}.dimensions IS DISTINCT FROM EXCLUDED.dimensions
+                        RETURNING TRUE
+                        """
+                    ).format(embedding_table=embedding_table),
+                    {
+                        "document_id": document_id,
+                        "provider": embedding.provider,
+                        "model_name": embedding.model_name,
+                        "dimensions": embedding.dimensions,
+                        "embedding": vector_value,
+                        "content_checksum": document.content_checksum,
+                    },
+                )
+                embedding_updated = cursor.fetchone() is not None
 
-                connection.commit()
+            connection.commit()
         except psycopg.Error as exc:
             _logger.exception("Failed to persist vector document: document_key=%r", document.document_key)
             raise VectorStoreError("Failed to persist vector document data.") from exc
+        finally:
+            self._return_connection(connection)
 
         _logger.debug(
-            "Vector document upserted: document_key=%r inserted=%s embedding_updated=%s",
-            document.document_key, bool(inserted), embedding_updated,
+            "Vector document upserted: document_key=%r inserted=%s embedding_updated=%s document_id=%d",
+            document.document_key, bool(inserted), embedding_updated, document_id,
         )
-        return VectorStoreResult(inserted=bool(inserted), embedding_updated=embedding_updated)
+        return VectorStoreResult(inserted=bool(inserted), embedding_updated=embedding_updated), document_id
