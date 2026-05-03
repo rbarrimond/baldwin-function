@@ -262,8 +262,8 @@ class EmailNormalizerTests(unittest.TestCase):
             {"Archive": ["archive-tag", "starred"]},
         )
 
-    def test_merge_duplicates_raises_email_normalization_error_on_checksum_conflict(self) -> None:
-        """Checksum conflicts should raise a Baldwin normalization error with context."""
+    def test_merge_duplicates_rekeys_collision_with_content_fingerprint(self) -> None:
+        """A Message-ID collision with different content should produce two entries with distinct fingerprints."""
         normalizer = EmailNormalizer()
         first = normalizer.normalize(
             Email(
@@ -296,10 +296,13 @@ class EmailNormalizerTests(unittest.TestCase):
             )
         )
 
-        with self.assertRaises(EmailNormalizationError) as context:
-            EmailNormalizer.merge_duplicates([first, conflicting])
+        result = EmailNormalizer.merge_duplicates([first, conflicting])
 
-        self.assertIn(first.fingerprint, str(context.exception))
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0].fingerprint, first.fingerprint)
+        self.assertEqual(result[0].body, "First body")
+        self.assertNotEqual(result[1].fingerprint, first.fingerprint)
+        self.assertEqual(result[1].body, "Second body")
 
 
 class HashingVectorizerTests(unittest.TestCase):

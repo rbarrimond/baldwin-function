@@ -110,20 +110,28 @@ class EmailNormalizer:
         return normalized_subject or normalized_body
 
     @staticmethod
+    def _content_based_fingerprint(sender: str, date: str, subject: str, searchable_text: str) -> str:
+        """Derive a fingerprint purely from message content fields.
+
+        Used as the primary fingerprint when no Message-ID is present, and as a
+        re-keying fallback when two messages share a Message-ID with different content.
+        All arguments must already be whitespace-normalised before calling.
+        """
+        fallback = "|".join([sender, date, subject, searchable_text])
+        return hashlib.sha256(fallback.encode("utf-8")).hexdigest()
+
+    @staticmethod
     def _build_fingerprint(email_message: Email, searchable_text: str) -> str:
         message_id = _normalize_whitespace(email_message.id or "")
         if message_id:
             return hashlib.sha256(message_id.encode("utf-8")).hexdigest()
 
-        fallback = "|".join(
-            [
-                _normalize_whitespace(email_message.sender),
-                _normalize_whitespace(email_message.date),
-                _normalize_whitespace(email_message.subject),
-                searchable_text,
-            ]
+        return EmailNormalizer._content_based_fingerprint(
+            _normalize_whitespace(email_message.sender),
+            _normalize_whitespace(email_message.date),
+            _normalize_whitespace(email_message.subject),
+            searchable_text,
         )
-        return hashlib.sha256(fallback.encode("utf-8")).hexdigest()
 
     def normalize(self, email_message: Email) -> NormalizedEmail:
         """Normalize a mailbox email into the canonical persistence shape."""
@@ -186,14 +194,35 @@ class EmailNormalizer:
                 continue
 
             if existing.content_checksum != normalized_email.content_checksum:
+                # Two distinct messages share a Message-ID — a broken mail server or
+                # forwarding loop has reused an identifier that must be globally unique.
+                # Re-key the conflicting email with a content-based fingerprint so
+                # both messages are persisted independently rather than one being dropped.
+                rekeyed_fingerprint = EmailNormalizer._content_based_fingerprint(
+                    normalized_email.sender,
+                    _normalize_whitespace(normalized_email.raw_date),
+                    normalized_email.subject,
+                    normalized_email.searchable_text,
+                )
                 _logger.warning(
-                    "Fingerprint collision with differing content: fingerprint=%r",
+                    "Message-ID collision — same fingerprint, different content; "
+                    "re-keying with content-based fingerprint: "
+                    "original_fingerprint=%r new_fingerprint=%r folders=%r",
                     normalized_email.fingerprint,
+                    rekeyed_fingerprint,
+                    normalized_email.folders,
                 )
-                raise EmailNormalizationError(
-                    "Conflicting normalized emails share fingerprint "
-                    f"{normalized_email.fingerprint} but have different content checksums."
-                )
+                if rekeyed_fingerprint in merged:
+                    _logger.warning(
+                        "Content-based fingerprint also collides; skipping email: "
+                        "fingerprint=%r",
+                        rekeyed_fingerprint,
+                    )
+                    continue
+                rekeyed = replace(normalized_email, fingerprint=rekeyed_fingerprint)
+                merged[rekeyed_fingerprint] = rekeyed
+                ordered_fingerprints.append(rekeyed_fingerprint)
+                continue
 
             merged[normalized_email.fingerprint] = replace(
                 existing,
