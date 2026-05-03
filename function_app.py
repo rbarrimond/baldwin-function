@@ -52,7 +52,7 @@ def process_scan_folder(msg: func.QueueMessage) -> None:
 @app.function_name(name="cleanup_scan_jobs")
 @app.timer_trigger(
     schedule="0 0 2 * * *",
-    arg_name="mytimer",
+    arg_name="_mytimer",
     run_on_startup=False,
     use_monitor=False,
 )
