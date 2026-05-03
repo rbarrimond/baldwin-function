@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "2f6a36a1-5d13-44d2-af59-d00dff1d4f1e",
     "name": "Baldwin Function",
-    "description": "Postman collection for the Baldwin Azure Function HTTP endpoints. Set the collection variable `baseUrl` to your deployed host if you are not running locally.",
+    "description": "Postman collection for the Baldwin Azure Function HTTP endpoints.\n\nSet the collection variable `baseUrl` to your deployed host (e.g. `https://<app>.azurewebsites.net`) if you are not running locally.\n\n**Endpoints**\n- `POST /api/scan-mail` — Enqueue an async IMAP ingestion job (preferred)\n- `GET  /api/scan-mail/status/{job_id}` — Poll the status of an async job\n- `GET  /api/scan-mail` — Synchronous IMAP ingestion (deprecated)\n- `POST /api/summarize-email` — Summarize an individual email body\n- `POST /api/build-digest` — Build a Markdown digest from summaries\n- `POST /api/send-digest` — Send a prepared digest over SMTP",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -10,136 +10,267 @@
       "key": "baseUrl",
       "value": "http://localhost:7071",
       "type": "string"
+    },
+    {
+      "key": "jobId",
+      "value": "",
+      "type": "string",
+      "description": "Populated from the response of 'Enqueue Scan'. Copy the returned job_id here."
     }
   ],
   "item": [
     {
-      "name": "Scan Mail",
+      "name": "Async Scan",
+      "description": "Two-step async flow: enqueue a scan job, then poll for its status.",
+      "item": [
+        {
+          "name": "Enqueue Scan",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/scan-mail?days=1&folders=INBOX,Archive",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "scan-mail"],
+              "query": [
+                {
+                  "key": "days",
+                  "value": "1",
+                  "description": "Number of days of history to ingest (integer, >= 1)."
+                },
+                {
+                  "key": "folders",
+                  "value": "INBOX,Archive",
+                  "description": "Comma-separated IMAP folder names. Defaults to IMAP_FOLDERS app setting when omitted."
+                }
+              ]
+            },
+            "description": "Enqueue an async per-folder IMAP ingestion job. Returns HTTP 202 with a `job_id` and `status_url`. Copy `job_id` into the `{{jobId}}` collection variable, then use 'Get Scan Status' to poll for completion."
+          },
+          "response": [
+            {
+              "name": "202 Accepted",
+              "status": "Accepted",
+              "code": 202,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"job_id\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"folder_count\": 2,\n  \"status_url\": \"/api/scan-mail/status/550e8400-e29b-41d4-a716-446655440000\"\n}"
+            },
+            {
+              "name": "400 Bad Request",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"error\": \"The 'days' query parameter must be an integer, got 'abc'.\"\n}"
+            },
+            {
+              "name": "500 Internal Server Error",
+              "status": "Internal Server Error",
+              "code": 500,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"error\": \"Internal server error.\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Scan Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/scan-mail/status/{{jobId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "scan-mail", "status", "{{jobId}}"]
+            },
+            "description": "Poll the status of a previously enqueued async scan job. Set `{{jobId}}` to the value returned by 'Enqueue Scan'. Repeat until `status` is `completed` or `partial`."
+          },
+          "response": [
+            {
+              "name": "200 OK – in progress",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"job_id\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"status\": \"in_progress\",\n  \"folder_count\": 2,\n  \"folders_done\": 1,\n  \"folders_failed\": 0,\n  \"created_at\": \"2026-05-03T12:00:00Z\",\n  \"updated_at\": \"2026-05-03T12:01:30Z\"\n}"
+            },
+            {
+              "name": "200 OK – completed",
+              "status": "OK",
+              "code": 200,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"job_id\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"status\": \"completed\",\n  \"folder_count\": 2,\n  \"folders_done\": 2,\n  \"folders_failed\": 0,\n  \"created_at\": \"2026-05-03T12:00:00Z\",\n  \"updated_at\": \"2026-05-03T12:03:00Z\"\n}"
+            },
+            {
+              "name": "404 Not Found",
+              "status": "Not Found",
+              "code": 404,
+              "header": [{"key": "Content-Type", "value": "application/json"}],
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"error\": \"Scan job not found: '550e8400-e29b-41d4-a716-446655440000'\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Scan Mail (Sync, Deprecated)",
       "request": {
         "method": "GET",
         "header": [],
         "url": {
           "raw": "{{baseUrl}}/api/scan-mail?days=1&folders=INBOX,Archive",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "scan-mail"
-          ],
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "scan-mail"],
           "query": [
             {
               "key": "days",
-              "value": "1"
+              "value": "1",
+              "description": "Number of days of history to ingest (integer, >= 1)."
             },
             {
               "key": "folders",
-              "value": "INBOX,Archive"
+              "value": "INBOX,Archive",
+              "description": "Comma-separated IMAP folder names."
             }
           ]
         },
-        "description": "Ingest recent IMAP emails from one or more folders and persist vectorized documents."
+        "description": "**Deprecated.** Synchronous IMAP ingestion that blocks until all folders are processed. Prefer `POST /api/scan-mail` (Enqueue Scan) for production use."
       },
-      "response": []
+      "response": [
+        {
+          "name": "200 OK",
+          "status": "OK",
+          "code": 200,
+          "header": [{"key": "Content-Type", "value": "application/json"}],
+          "_postman_previewlanguage": "json",
+          "body": "{\n  \"total_fetched\": 42,\n  \"total_normalized\": 42,\n  \"total_deduped\": 38,\n  \"total_persisted\": 4,\n  \"reconciled_missing\": 0\n}"
+        }
+      ]
     },
     {
       "name": "Summarize Email",
       "request": {
         "method": "POST",
         "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
+          {"key": "Content-Type", "value": "application/json"}
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"body\": \"Agenda for tomorrow. Please review the contract.\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
+          "raw": "{\n  \"body\": \"Hi Robert, just a reminder that the contract review meeting is tomorrow at 10am. Please bring your notes from last week's session.\"\n}",
+          "options": {"raw": {"language": "json"}}
         },
         "url": {
           "raw": "{{baseUrl}}/api/summarize-email",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "summarize-email"
-          ]
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "summarize-email"]
         },
-        "description": "Generate a concise summary from an email body."
+        "description": "Generate a concise summary from an email body string. The `body` field is required."
       },
-      "response": []
+      "response": [
+        {
+          "name": "200 OK",
+          "status": "OK",
+          "code": 200,
+          "header": [{"key": "Content-Type", "value": "application/json"}],
+          "_postman_previewlanguage": "json",
+          "body": "{\n  \"summary\": \"Reminder about a contract review meeting tomorrow at 10am; bring notes from last week.\"\n}"
+        },
+        {
+          "name": "400 Bad Request",
+          "status": "Bad Request",
+          "code": 400,
+          "header": [{"key": "Content-Type", "value": "application/json"}],
+          "_postman_previewlanguage": "json",
+          "body": "{\n  \"error\": \"body is required.\"\n}"
+        }
+      ]
     },
     {
       "name": "Build Digest",
       "request": {
         "method": "POST",
         "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
+          {"key": "Content-Type", "value": "application/json"}
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"summaries\": [\n    \"One\",\n    {\n      \"summary\": \"Two\"\n    }\n  ],\n  \"audience\": \"robert\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
+          "raw": "{\n  \"summaries\": [\n    \"Contract review meeting is tomorrow at 10am.\",\n    {\"summary\": \"Invoice #4821 approved and sent to accounting.\"}\n  ],\n  \"audience\": \"robert\"\n}",
+          "options": {"raw": {"language": "json"}}
         },
         "url": {
           "raw": "{{baseUrl}}/api/build-digest",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "build-digest"
-          ]
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "build-digest"]
         },
-        "description": "Build a Markdown digest from a list of summaries."
+        "description": "Build a Markdown digest from a list of summaries. Each entry in `summaries` may be a plain string or an object with a `summary` key. `audience` is optional and defaults to `\"robert\"`."
       },
-      "response": []
+      "response": [
+        {
+          "name": "200 OK – Markdown",
+          "status": "OK",
+          "code": 200,
+          "header": [{"key": "Content-Type", "value": "text/markdown"}],
+          "_postman_previewlanguage": "text",
+          "body": "## Daily Digest for Robert\n\n- Contract review meeting is tomorrow at 10am.\n- Invoice #4821 approved and sent to accounting.\n"
+        },
+        {
+          "name": "400 Bad Request",
+          "status": "Bad Request",
+          "code": 400,
+          "header": [{"key": "Content-Type", "value": "application/json"}],
+          "_postman_previewlanguage": "json",
+          "body": "{\n  \"error\": \"summaries must be a non-empty list.\"\n}"
+        }
+      ]
     },
     {
       "name": "Send Digest",
       "request": {
         "method": "POST",
         "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
+          {"key": "Content-Type", "value": "application/json"}
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"to\": \"user@example.com\",\n  \"subject\": \"Daily Digest\",\n  \"content\": \"## Daily Digest for Robert\\n\\n- One\\n- Two\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
+          "raw": "{\n  \"to\": \"user@example.com\",\n  \"subject\": \"Daily Digest — May 3, 2026\",\n  \"content\": \"## Daily Digest for Robert\\n\\n- Contract review meeting is tomorrow at 10am.\\n- Invoice #4821 approved and sent to accounting.\\n\"\n}",
+          "options": {"raw": {"language": "json"}}
         },
         "url": {
           "raw": "{{baseUrl}}/api/send-digest",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "api",
-            "send-digest"
-          ]
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "send-digest"]
         },
-        "description": "Send a prepared digest over SMTP."
+        "description": "Send a prepared Markdown digest over SMTP. All three fields (`to`, `subject`, `content`) are required."
       },
-      "response": []
+      "response": [
+        {
+          "name": "200 OK",
+          "status": "OK",
+          "code": 200,
+          "header": [{"key": "Content-Type", "value": "application/json"}],
+          "_postman_previewlanguage": "json",
+          "body": "{\n  \"status\": \"sent\",\n  \"from\": \"noreply@example.com\"\n}"
+        },
+        {
+          "name": "400 Bad Request – missing fields",
+          "status": "Bad Request",
+          "code": 400,
+          "header": [{"key": "Content-Type", "value": "application/json"}],
+          "_postman_previewlanguage": "json",
+          "body": "{\n  \"error\": \"Recipient, subject, and content are required to send a digest.\"\n}"
+        },
+        {
+          "name": "502 Bad Gateway – SMTP failure",
+          "status": "Bad Gateway",
+          "code": 502,
+          "header": [{"key": "Content-Type", "value": "application/json"}],
+          "_postman_previewlanguage": "json",
+          "body": "{\n  \"error\": \"Unable to send the digest email.\"\n}"
+        }
+      ]
     }
   ]
 }
