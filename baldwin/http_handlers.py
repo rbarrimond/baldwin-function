@@ -37,7 +37,7 @@ from baldwin.exceptions import (
     ImapReasonCategory,
     VectorStoreError,
 )
-from baldwin.log import get_logger
+from baldwin.log import get_logger, set_trace_id
 
 _logger = get_logger(__name__)
 
@@ -674,8 +674,23 @@ class MailboxHttpHandlers:
         }
         return payload
 
+    @staticmethod
+    def _resolve_trace_id(req: HttpRequest) -> str:
+        """Extract a trace ID from the W3C traceparent header or generate a fresh UUID.
+
+        The traceparent format is ``00-{trace-id}-{parent-id}-{flags}`` where
+        the trace ID is a 32-character hex string.  Falls back to a new UUID
+        when the header is absent or malformed.
+        """
+        traceparent = req.headers.get("traceparent", "")
+        parts = traceparent.split("-")
+        if len(parts) == 4 and len(parts[1]) == 32:
+            return parts[1]
+        return str(uuid4())
+
     def scan_mail(self, req: HttpRequest) -> HttpResponse:
         """Handle a request to scan mailbox folders and persist email content."""
+        set_trace_id(self._resolve_trace_id(req))
         try:
             scan_request = self.request_parser.parse_scan_request(req)
             summary = self.ingestion_service.ingest_mailbox(

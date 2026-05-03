@@ -6,8 +6,21 @@ import json
 import logging
 import os
 import sys
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
+
+_trace_id_var: ContextVar[str | None] = ContextVar("trace_id", default=None)
+
+
+def set_trace_id(trace_id: str) -> None:
+    """Bind a trace ID to the current context.
+
+    The value propagates automatically to threads submitted via
+    ``concurrent.futures.ThreadPoolExecutor`` because Python copies the
+    active context on each ``submit`` call.
+    """
+    _trace_id_var.set(trace_id)
 
 
 class _JsonFormatter(logging.Formatter):
@@ -20,6 +33,9 @@ class _JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
+        trace_id = _trace_id_var.get()
+        if trace_id is not None:
+            payload["trace_id"] = trace_id
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
         if record.stack_info:
