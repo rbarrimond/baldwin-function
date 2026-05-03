@@ -37,6 +37,9 @@ from baldwin.exceptions import (
     ImapReasonCategory,
     VectorStoreError,
 )
+from azure.core.exceptions import AzureError, ResourceExistsError
+from azure.storage.queue import QueueClient
+from baldwin.jobs import ScanJobStore
 from baldwin.log import get_logger, set_trace_id
 
 _logger = get_logger(__name__)
@@ -75,6 +78,20 @@ class ScanMailboxProgress:
     stage: str
     current: int
     total: int
+
+
+@dataclass(frozen=True)
+class FolderIngestionResult:
+    """Summary of a single async folder ingestion job."""
+
+    folder_name: str
+    sync_mode: str
+    sync_run_id: str
+    total_fetched: int
+    total_normalized: int
+    total_deduped: int
+    total_persisted: int
+    reconciled_missing: int
 
 
 ProgressCallback = Callable[[ScanMailboxProgress], None]
@@ -546,6 +563,96 @@ class EmailIngestionService:
             "persisted": persisted,
         }
 
+    def ingest_folder(
+        self,
+        folder_name: str,
+        days: int,
+    ) -> FolderIngestionResult:
+        """Fetch, normalize, embed, and persist emails for a single IMAP folder.
+
+        The caller is responsible for running delete_documents_without_folders()
+        after all folder jobs for a scan have completed.
+        """
+        sync_run_id = str(uuid4())
+        observed_at = datetime.now(UTC)
+        email_service = self._build_email_service()
+        vector_store = self._build_vector_store()
+        self._ensure_store_schema(vector_store)
+        folders = MailboxFolders((folder_name,))
+
+        _logger.info(
+            "Starting folder ingestion: sync_run_id=%r folder=%r days=%d",
+            sync_run_id, folder_name, days,
+        )
+        emails, folder_statuses, sync_modes = self._fetch_folder_payloads(
+            vector_store=vector_store,
+            folders=folders,
+            days=days,
+            incremental_sync_enabled=self._incremental_sync_enabled(),
+        )
+
+        normalized = self._normalize_emails(emails)
+        deduped = self.normalizer.merge_duplicates(normalized)
+        embeddings = self._embed_searchable_texts(
+            [email_message.searchable_text for email_message in deduped],
+        )
+        batch_results = vector_store.upsert_emails_batch(deduped, embeddings)
+        sync_records: list[dict[str, Any]] = []
+        for normalized_email, (_, document_id) in zip(deduped, batch_results):
+            sync_records.append(
+                {
+                    "document_key": normalized_email.fingerprint,
+                    "document_id": document_id,
+                    "folder_names": normalized_email.folders,
+                    "folder_uids": normalized_email.folder_uids,
+                }
+            )
+
+        vector_store.record_document_syncs_batch(
+            sync_records,
+            sync_run_id=sync_run_id,
+            last_seen_at=observed_at,
+        )
+        reconciled_missing = self._reconcile_folder_membership(
+            vector_store=vector_store,
+            folders=folders,
+            folder_statuses=folder_statuses,
+            sync_modes=sync_modes,
+            sync_run_id=sync_run_id,
+            observed_at=observed_at,
+        )
+
+        folder_status = folder_statuses[folder_name]
+        vector_store.upsert_mailbox_sync_state(
+            imap_user=email_service.imap_user,
+            imap_host=email_service.imap_host,
+            imap_folder=folder_name,
+            sync_run_id=sync_run_id,
+            total_emails_in_folder=folder_status.message_count,
+            uidvalidity=folder_status.uidvalidity,
+            last_synced_uid=max(folder_status.uids) if folder_status.uids else None,
+            synced_at=observed_at,
+        )
+
+        _logger.info(
+            "Folder ingestion complete: sync_run_id=%r folder=%r fetched=%d deduped=%d",
+            sync_run_id, folder_name, len(emails), len(deduped),
+        )
+        return FolderIngestionResult(
+            folder_name=folder_name,
+            sync_mode=sync_modes[folder_name],
+            sync_run_id=sync_run_id,
+            total_fetched=len(emails),
+            total_normalized=len(normalized),
+            total_deduped=len(deduped),
+            total_persisted=len(batch_results),
+            reconciled_missing=reconciled_missing,
+        )
+
+    def delete_stale_documents(self) -> int:
+        """Delete documents no longer associated with any folder."""
+        return self._build_vector_store().delete_documents_without_folders()
+
 
 class SummaryService:
     """Summarize individual email bodies for the HTTP API."""
@@ -643,6 +750,7 @@ class MailboxHttpHandlers:
         digest_builder: DigestBuilder,
         digest_delivery_service: DigestDeliveryService,
         response_factory: ResponseFactory,
+        settings: EnvironmentSettings,
     ):
         self.ingestion_service = ingestion_service
         self.request_parser = request_parser
@@ -650,6 +758,9 @@ class MailboxHttpHandlers:
         self.digest_builder = digest_builder
         self.digest_delivery_service = digest_delivery_service
         self.response_factory = response_factory
+        self.settings = settings
+        self._scan_job_store: ScanJobStore | None = None
+        self._scan_job_store_ready: bool = False
 
     @staticmethod
     def _is_caused_by(
@@ -674,6 +785,15 @@ class MailboxHttpHandlers:
         }
         return payload
 
+    def _get_scan_job_store(self) -> ScanJobStore:
+        """Return the ScanJobStore, bootstrapping the schema on first access."""
+        if self._scan_job_store is None:
+            self._scan_job_store = ScanJobStore(self.settings.get_required("DATABASE_URL"))
+        if not self._scan_job_store_ready:
+            self._scan_job_store.bootstrap()
+            self._scan_job_store_ready = True
+        return self._scan_job_store
+
     @staticmethod
     def _resolve_trace_id(req: HttpRequest) -> str:
         """Extract a trace ID from the W3C traceparent header or generate a fresh UUID.
@@ -688,6 +808,147 @@ class MailboxHttpHandlers:
             return parts[1]
         return str(uuid4())
 
+    def enqueue_scan(self, req: HttpRequest) -> HttpResponse:
+        """Enqueue an async scan job per folder and return 202 with a job ID."""
+        set_trace_id(self._resolve_trace_id(req))
+        try:
+            scan_request = self.request_parser.parse_scan_request(req)
+            folders = list(scan_request.folders.folders)
+            job_id = str(uuid4())
+
+            store = self._get_scan_job_store()
+            store.create_job(
+                job_id,
+                params={"days": scan_request.days, "folders": folders},
+                folder_count=len(folders),
+            )
+            store.create_folder_records(job_id, folders)
+
+            connection_string = self.settings.get_required("AzureWebJobsStorage")
+            queue_name = self.settings.get("SCAN_MAIL_QUEUE_NAME") or "scan-mail-jobs"
+            queue_client = QueueClient.from_connection_string(
+                connection_string,
+                queue_name,
+                message_encode_policy=None,
+                message_decode_policy=None,
+            )
+            try:
+                queue_client.create_queue()
+            except ResourceExistsError:
+                pass
+
+            for folder in folders:
+                queue_client.send_message(
+                    json.dumps({"job_id": job_id, "folder": folder, "days": scan_request.days})
+                )
+
+            _logger.info(
+                "Scan job enqueued: job_id=%r folder_count=%d days=%d",
+                job_id, len(folders), scan_request.days,
+            )
+            return self.response_factory.json(
+                {
+                    "job_id": job_id,
+                    "folder_count": len(folders),
+                    "status_url": f"/api/scan-mail/status/{job_id}",
+                },
+                status_code=202,
+            )
+        except BaldwinConfigurationError:
+            _logger.exception("Configuration error in enqueue_scan")
+            return self.response_factory.json(
+                {"error": INTERNAL_SERVER_ERROR_MESSAGE}, status_code=500
+            )
+        except BaldwinValidationError as exc:
+            _logger.warning("Invalid request for enqueue_scan: %s", exc)
+            return self.response_factory.json({"error": str(exc)}, status_code=400)
+        except (VectorStoreError, AzureError) as exc:
+            _logger.exception("Error enqueuing scan job: %s", exc)
+            return self.response_factory.json(
+                {"error": INTERNAL_SERVER_ERROR_MESSAGE}, status_code=500
+            )
+
+    def process_folder_job(self, msg_body: dict[str, Any]) -> None:
+        """Execute a single folder ingestion dispatched from the scan queue."""
+        job_id = msg_body["job_id"]
+        folder = msg_body["folder"]
+        days = int(msg_body["days"])
+
+        _logger.info(
+            "Processing folder job: job_id=%r folder=%r days=%d",
+            job_id, folder, days,
+        )
+        store = self._get_scan_job_store()
+        store.mark_folder_started(job_id, folder)
+
+        try:
+            result = self.ingestion_service.ingest_folder(folder, days)
+            stats = {
+                "total_fetched": result.total_fetched,
+                "total_normalized": result.total_normalized,
+                "total_deduped": result.total_deduped,
+                "total_persisted": result.total_persisted,
+                "reconciled_missing": result.reconciled_missing,
+                "sync_mode": result.sync_mode,
+                "sync_run_id": result.sync_run_id,
+            }
+            remaining = store.mark_folder_done(job_id, folder, stats)
+        except (EmailFetchError, EmbeddingProviderError, VectorStoreError, BaldwinConfigurationError) as exc:
+            _logger.exception(
+                "Folder job failed: job_id=%r folder=%r error=%s", job_id, folder, exc
+            )
+            error_info: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
+            remaining = store.mark_folder_failed(job_id, folder, error_info)
+            if remaining == 0:
+                self._finalize_folder_job(job_id)
+            raise
+
+        if remaining == 0:
+            self._finalize_folder_job(job_id)
+
+    def _finalize_folder_job(self, job_id: str) -> None:
+        """Delete stale documents and mark the scan job as completed or partial."""
+        _logger.info("Finalizing scan job: job_id=%r", job_id)
+        try:
+            deleted = self.ingestion_service.delete_stale_documents()
+            _logger.info(
+                "Stale document cleanup complete: job_id=%r deleted=%d", job_id, deleted
+            )
+        except VectorStoreError:
+            _logger.exception(
+                "Error during stale document cleanup: job_id=%r", job_id
+            )
+        finally:
+            self._get_scan_job_store().finalize_job(job_id)
+
+    def get_scan_status(self, req: HttpRequest) -> HttpResponse:
+        """Return the current status of an async scan job."""
+        job_id = req.route_params.get("job_id", "")
+        if not job_id:
+            return self.response_factory.json({"error": "job_id is required."}, status_code=400)
+        try:
+            status = self._get_scan_job_store().get_job_status(job_id)
+            if status is None:
+                return self.response_factory.json(
+                    {"error": f"Scan job not found: {job_id!r}"},
+                    status_code=404,
+                )
+            return self.response_factory.json(status)
+        except VectorStoreError:
+            _logger.exception(
+                "Database error fetching scan job status: job_id=%r", job_id
+            )
+            return self.response_factory.json(
+                {"error": INTERNAL_SERVER_ERROR_MESSAGE}, status_code=500
+            )
+
+    def cleanup_scan_jobs(self) -> None:
+        """Delete expired scan job records; invoked by a nightly timer trigger."""
+        retention_days = self.settings.get_int("SCAN_JOB_RETENTION_DAYS", 30)
+        _logger.info("Starting scan job cleanup: retention_days=%d", retention_days)
+        deleted = self._get_scan_job_store().delete_expired_jobs(retention_days)
+        _logger.info("Scan job cleanup complete: deleted=%d", deleted)
+
     def scan_mail(self, req: HttpRequest) -> HttpResponse:
         """Handle a request to scan mailbox folders and persist email content."""
         set_trace_id(self._resolve_trace_id(req))
@@ -696,6 +957,9 @@ class MailboxHttpHandlers:
             summary = self.ingestion_service.ingest_mailbox(
                 scan_request.days,
                 scan_request.folders,
+            )
+            summary["_deprecation_notice"] = (
+                "GET /api/scan-mail is deprecated. Use POST /api/scan-mail for async execution."
             )
             return self.response_factory.json(summary)
         except BaldwinConfigurationError:
@@ -805,4 +1069,5 @@ def build_http_handlers() -> MailboxHttpHandlers:
         digest_builder=DigestBuilder(),
         digest_delivery_service=DigestDeliveryService(settings),
         response_factory=ResponseFactory(),
+        settings=settings,
     )

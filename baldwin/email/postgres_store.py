@@ -16,6 +16,7 @@ from baldwin.vector.postgres_store import (
     PostgresVectorStore,
     VectorDocument,
     VectorStoreResult,
+    _vector_literal,
 )
 from .vectorization import NormalizedEmail
 
@@ -117,26 +118,193 @@ class PostgresEmailVectorStore(PostgresVectorStore):
         embedding: EmbeddingResult,
     ) -> tuple[VectorStoreResult, int]:
         """Upsert an email by delegating to the generic document store.
-        
+
         Returns:
             Tuple of (VectorStoreResult, document_id) for batch sync recording.
         """
         return self.upsert_document(self.to_document(normalized_email), embedding)
+
+    def _upsert_email_on_connection(
+        self,
+        connection: Any,
+        document: VectorDocument,
+        embedding: EmbeddingResult,
+    ) -> tuple[VectorStoreResult, int]:
+        """Execute a single email upsert with JSONB folder-merge semantics.
+
+        Unlike the generic _upsert_on_connection, this method merges the
+        folders, folder_uids, folder_flags, and folder_keywords fields in
+        metadata rather than replacing them wholesale. This preserves
+        multi-folder membership when the same email is processed from
+        different folders in separate queue jobs.
+        """
+        document_table = sql.Identifier(self.document_table)
+        embedding_table = sql.Identifier(self.embedding_table)
+        vector_value = _vector_literal(embedding.vector)
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {document_table} (
+                        document_key,
+                        source_type,
+                        source_id,
+                        title,
+                        body,
+                        searchable_text,
+                        metadata,
+                        content_checksum
+                    )
+                    VALUES (
+                        %(document_key)s,
+                        %(source_type)s,
+                        %(source_id)s,
+                        %(title)s,
+                        %(body)s,
+                        %(searchable_text)s,
+                        %(metadata)s::jsonb,
+                        %(content_checksum)s
+                    )
+                    ON CONFLICT (document_key) DO UPDATE SET
+                        source_type = EXCLUDED.source_type,
+                        source_id = EXCLUDED.source_id,
+                        title = EXCLUDED.title,
+                        body = EXCLUDED.body,
+                        searchable_text = EXCLUDED.searchable_text,
+                        content_checksum = EXCLUDED.content_checksum,
+                        updated_at = NOW(),
+                        metadata = EXCLUDED.metadata || jsonb_build_object(
+                            'folders', (
+                                SELECT COALESCE(
+                                    jsonb_agg(DISTINCT fv ORDER BY fv),
+                                    '[]'::jsonb
+                                )
+                                FROM (
+                                    SELECT jsonb_array_elements_text(
+                                        COALESCE({document_table}.metadata->'folders', '[]'::jsonb)
+                                    ) AS fv
+                                    UNION
+                                    SELECT jsonb_array_elements_text(
+                                        COALESCE(EXCLUDED.metadata->'folders', '[]'::jsonb)
+                                    ) AS fv
+                                ) AS _combined
+                            ),
+                            'folder_uids',
+                                COALESCE({document_table}.metadata->'folder_uids', '{{}}'::jsonb)
+                                || COALESCE(EXCLUDED.metadata->'folder_uids', '{{}}'::jsonb),
+                            'folder_flags',
+                                COALESCE({document_table}.metadata->'folder_flags', '{{}}'::jsonb)
+                                || COALESCE(EXCLUDED.metadata->'folder_flags', '{{}}'::jsonb),
+                            'folder_keywords',
+                                COALESCE({document_table}.metadata->'folder_keywords', '{{}}'::jsonb)
+                                || COALESCE(EXCLUDED.metadata->'folder_keywords', '{{}}'::jsonb)
+                        )
+                    RETURNING id, (xmax = 0) AS inserted
+                    """
+                ).format(document_table=document_table),
+                {
+                    "document_key": document.document_key,
+                    "source_type": document.source_type,
+                    "source_id": document.source_id,
+                    "title": document.title,
+                    "body": document.body,
+                    "searchable_text": document.searchable_text,
+                    "metadata": json.dumps(document.metadata),
+                    "content_checksum": document.content_checksum,
+                },
+            )
+            document_row = cursor.fetchone()
+            if document_row is None:
+                raise VectorStoreError("Failed to upsert email document metadata.")
+
+            document_id, inserted = document_row
+            cursor.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {embedding_table} (
+                        document_id,
+                        provider,
+                        model_name,
+                        dimensions,
+                        embedding,
+                        content_checksum
+                    )
+                    VALUES (
+                        %(document_id)s,
+                        %(provider)s,
+                        %(model_name)s,
+                        %(dimensions)s,
+                        %(embedding)s::vector,
+                        %(content_checksum)s
+                    )
+                    ON CONFLICT (document_id, provider, model_name) DO UPDATE SET
+                        dimensions = EXCLUDED.dimensions,
+                        embedding = EXCLUDED.embedding,
+                        content_checksum = EXCLUDED.content_checksum,
+                        updated_at = NOW()
+                    WHERE {embedding_table}.content_checksum IS DISTINCT FROM EXCLUDED.content_checksum
+                       OR {embedding_table}.dimensions IS DISTINCT FROM EXCLUDED.dimensions
+                    RETURNING TRUE
+                    """
+                ).format(embedding_table=embedding_table),
+                {
+                    "document_id": document_id,
+                    "provider": embedding.provider,
+                    "model_name": embedding.model_name,
+                    "dimensions": embedding.dimensions,
+                    "embedding": vector_value,
+                    "content_checksum": document.content_checksum,
+                },
+            )
+            embedding_updated = cursor.fetchone() is not None
+
+        return VectorStoreResult(inserted=bool(inserted), embedding_updated=embedding_updated), document_id
 
     def upsert_emails_batch(
         self,
         normalized_emails: list[NormalizedEmail],
         embeddings: list[EmbeddingResult],
     ) -> list[tuple[VectorStoreResult, int]]:
-        """Upsert multiple emails using a single pooled connection.
+        """Upsert multiple emails with JSONB folder-merge semantics.
+
+        Overrides the generic document store to preserve multi-folder membership:
+        when the same email appears in multiple folders (via cross-folder
+        fingerprint collision), folder_uids, folder_flags, and folder_keywords
+        are merged rather than replaced wholesale.
 
         Returns:
             List of (VectorStoreResult, document_id) in the same order as inputs.
         """
-        return self.upsert_documents_batch(
-            [self.to_document(email) for email in normalized_emails],
-            embeddings,
+        if len(normalized_emails) != len(embeddings):
+            raise ValueError(
+                f"normalized_emails and embeddings must have equal length: "
+                f"{len(normalized_emails)} != {len(embeddings)}"
+            )
+        if not normalized_emails:
+            return []
+
+        _logger.debug(
+            "Batch-upserting %d email documents with folder-merge semantics",
+            len(normalized_emails),
         )
+        results: list[tuple[VectorStoreResult, int]] = []
+        connection = self._get_connection()
+        try:
+            for normalized_email, embedding in zip(normalized_emails, embeddings):
+                result = self._upsert_email_on_connection(
+                    connection, self.to_document(normalized_email), embedding
+                )
+                connection.commit()
+                results.append(result)
+        except psycopg.Error as exc:
+            _logger.exception("Failed to persist email document batch")
+            raise VectorStoreError("Failed to persist email document data.") from exc
+        finally:
+            self._return_connection(connection)
+
+        _logger.debug("Email batch upsert complete: %d documents persisted", len(results))
+        return results
 
     def record_document_syncs_batch(
         self,

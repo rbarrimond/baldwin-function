@@ -1,10 +1,124 @@
 # Scan-Mail Email Ingestion
 
-The `GET /api/scan-mail` endpoint is Baldwin's mailbox ingestion entrypoint. It reads one or more IMAP folders, normalizes the fetched messages, generates embeddings for the normalized text, and persists the results into PostgreSQL through the shared vector-document store.
+Baldwin provides two ingestion entry points:
 
-This document describes the HTTP contract, runtime behavior, environment requirements, and operational failure modes for the ingestion flow exposed by `function_app.py` and implemented in `baldwin/http_handlers.py`.
+- **`POST /api/scan-mail`** — Async, queue-backed, per-folder fan-out. Preferred for production.
+- **`GET /api/scan-mail`** — Synchronous single-request scan. Deprecated; kept for backwards compatibility.
 
-## Endpoint Contract
+Async ingestion enqueues one Azure Storage Queue message per folder, returns `202 Accepted` immediately with a job ID, and allows each folder to be processed independently by a queue-triggered worker. This document covers both modes.
+
+## Async Ingestion (POST)
+
+### Enqueue Endpoint
+
+- Method: `POST`
+- Route: `/api/scan-mail`
+- Content type: `application/json`
+
+#### Request Body
+
+```json
+{
+  "days": 7,
+  "folders": ["INBOX", "Archive"]
+}
+```
+
+- `days`: Optional integer lookback window. Defaults to `1`. Must be greater than `0`.
+- `folders`: Optional list of IMAP folder names. Falls back to `IMAP_FOLDERS`, then `INBOX`.
+
+#### Response — 202 Accepted
+
+```json
+{
+  "job_id": "3f6b1a2c-...",
+  "folder_count": 2,
+  "status_url": "/api/scan-mail/status/3f6b1a2c-..."
+}
+```
+
+### Status Endpoint
+
+- Method: `GET`
+- Route: `/api/scan-mail/status/{job_id}`
+
+#### Response — 200 OK
+
+```json
+{
+  "job_id": "3f6b1a2c-...",
+  "status": "in_progress",
+  "folder_count": 2,
+  "params": { "days": 7, "folders": ["INBOX", "Archive"] },
+  "created_at": "2025-06-01T02:00:00Z",
+  "completed_at": null,
+  "folders": [
+    {
+      "folder": "INBOX",
+      "status": "completed",
+      "started_at": "2025-06-01T02:00:01Z",
+      "completed_at": "2025-06-01T02:00:12Z",
+      "stats": { "total_fetched": 8, "total_deduped": 7, "total_persisted": 7 },
+      "error": null
+    },
+    {
+      "folder": "Archive",
+      "status": "in_progress",
+      "started_at": "2025-06-01T02:00:08Z",
+      "completed_at": null,
+      "stats": null,
+      "error": null
+    }
+  ]
+}
+```
+
+Job `status` values: `pending`, `in_progress`, `completed`, `partial` (at least one folder failed).
+
+#### Response — 404 Not Found
+
+```json
+{ "error": "Scan job not found: '3f6b1a2c-...'" }
+```
+
+### Queue Message Schema
+
+Each message placed on `scan-mail-jobs` has the following JSON body:
+
+```json
+{ "job_id": "3f6b1a2c-...", "folder": "INBOX", "days": 7 }
+```
+
+Messages are sent as raw UTF-8 JSON (no base64 encoding). The `QueueClient` is created with `message_encode_policy=None`.
+
+### Async Flow Sequence
+
+1. `POST /api/scan-mail` — parse request, allocate `job_id`, persist job + folder rows in PostgreSQL (`scan_jobs`, `scan_job_folders`), create queue if absent, enqueue one message per folder.
+2. `process_scan_folder` (queue trigger) — for each message: marks folder `in_progress`, calls `ingest_folder()`, marks `completed` or `failed` with stats/error, decrements remaining count.
+3. When `remaining == 0` — `_finalize_folder_job()` runs `delete_documents_without_folders()` then marks the job `completed` (or `partial` if any folder failed).
+4. `cleanup_scan_jobs` (timer trigger at 02:00 UTC daily) — deletes job records older than `SCAN_JOB_RETENTION_DAYS`.
+
+### Multi-Folder JSONB Correctness
+
+When multiple folders are scanned in parallel and the same email appears in more than one folder, concurrent upserts must merge — not overwrite — the `folders`, `folder_uids`, `folder_flags`, and `folder_keywords` fields.
+
+`PostgresEmailVectorStore` overrides `_upsert_email_on_connection()` to perform this merge via `ON CONFLICT DO UPDATE` with PostgreSQL JSONB set-union logic:
+
+```sql
+metadata = EXCLUDED.metadata || jsonb_build_object(
+    'folders', <set-union of existing + incoming arrays>,
+    'folder_uids', COALESCE(existing, '{}') || COALESCE(incoming, '{}'),
+    ...
+)
+```
+
+The `delete_documents_without_folders()` cleanup step runs only once, after all folder jobs have completed, to avoid removing documents that will be re-observed by a concurrent folder worker.
+
+---
+
+## Synchronous Ingestion (GET) — Deprecated
+
+The `GET /api/scan-mail` endpoint is deprecated. It remains available for backwards compatibility but returns a `_deprecation_notice` field in its response body. Use `POST /api/scan-mail` for new integrations.
 
 - Method: `GET`
 - Route: `/api/scan-mail`
@@ -27,6 +141,7 @@ Status: `200 OK`
 
 ```json
 {
+  "_deprecation_notice": "GET /api/scan-mail is deprecated. Use POST /api/scan-mail for async execution.",
   "total_fetched": 12,
   "total_normalized": 12,
   "total_deduped": 9,
