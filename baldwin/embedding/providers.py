@@ -24,6 +24,8 @@ DEFAULT_HASH_DIMENSIONS = 256
 DEFAULT_HASH_MODEL = "hashing-v1"
 DEFAULT_FALLBACK_PROVIDER = "hashing"
 TEXT_REQUIRED_ERROR = "Text is required for embedding."
+DEFAULT_AZURE_OPENAI_API_VERSION = "2024-02-01"
+DEFAULT_AZURE_EMBEDDING_MODEL = "text-embedding-3-small"
 
 
 class EmbeddingProviderError(BaldwinError):
@@ -52,6 +54,9 @@ class EmbeddingSettings:
     hashing_dimensions: int = DEFAULT_HASH_DIMENSIONS
     fallback_provider_name: str | None = DEFAULT_FALLBACK_PROVIDER
     enable_fallback: bool = True
+    azure_openai_endpoint: str = ""
+    azure_openai_api_key: str = ""
+    azure_openai_api_version: str = DEFAULT_AZURE_OPENAI_API_VERSION
 
 
 @dataclass(frozen=True)
@@ -153,6 +158,22 @@ def load_embedding_settings(overrides: Mapping[str, Any] | None = None) -> Embed
         default=True,
     )
 
+    azure_openai_endpoint = str(
+        overrides.get("azure_openai_endpoint")
+        or os.getenv("AZURE_OPENAI_ENDPOINT")
+        or ""
+    ).strip().rstrip("/")
+    azure_openai_api_key = str(
+        overrides.get("azure_openai_api_key")
+        or os.getenv("AZURE_OPENAI_API_KEY")
+        or ""
+    ).strip()
+    azure_openai_api_version = str(
+        overrides.get("azure_openai_api_version")
+        or os.getenv("AZURE_OPENAI_API_VERSION")
+        or DEFAULT_AZURE_OPENAI_API_VERSION
+    ).strip()
+
     return EmbeddingSettings(
         provider_name=provider_name,
         model_name=model_name,
@@ -161,6 +182,9 @@ def load_embedding_settings(overrides: Mapping[str, Any] | None = None) -> Embed
         hashing_dimensions=hashing_dimensions,
         fallback_provider_name=fallback_provider_name,
         enable_fallback=enable_fallback,
+        azure_openai_endpoint=azure_openai_endpoint,
+        azure_openai_api_key=azure_openai_api_key,
+        azure_openai_api_version=azure_openai_api_version,
     )
 
 
@@ -413,6 +437,91 @@ class OllamaEmbeddingProvider:
         )
 
 
+class AzureOpenAIEmbeddingProvider:
+    """Embedding provider backed by Azure OpenAI (text-embedding-* models)."""
+
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        api_key: str,
+        model_name: str = DEFAULT_AZURE_EMBEDDING_MODEL,
+        api_version: str = DEFAULT_AZURE_OPENAI_API_VERSION,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        provider_name: str = "azure-openai",
+    ):
+        if not endpoint:
+            raise EmbeddingProviderError("Azure OpenAI endpoint is required.")
+        if not api_key:
+            raise EmbeddingProviderError("Azure OpenAI api_key is required.")
+        if not model_name:
+            raise EmbeddingProviderError("Azure OpenAI model_name is required.")
+        if timeout_seconds <= 0:
+            raise EmbeddingProviderError("Azure OpenAI timeout_seconds must be greater than 0.")
+
+        self.endpoint = endpoint
+        self.api_key = api_key
+        self.model_name = model_name
+        self.api_version = api_version
+        self.timeout_seconds = timeout_seconds
+        self.provider_name = provider_name
+
+    def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
+        """Return an embedding result for each input text via Azure OpenAI."""
+        import openai  # deferred import — optional dependency
+
+        normalized = [_normalize_whitespace(text) for text in texts]
+        if any(not text for text in normalized):
+            raise EmbeddingProviderError(TEXT_REQUIRED_ERROR)
+
+        client = openai.AzureOpenAI(
+            azure_endpoint=self.endpoint,
+            api_key=self.api_key,
+            api_version=self.api_version,
+            timeout=self.timeout_seconds,
+        )
+
+        try:
+            response = client.embeddings.create(model=self.model_name, input=normalized)
+        except openai.APIStatusError as exc:
+            raise EmbeddingProviderError(
+                f"Azure OpenAI embedding request failed with HTTP {exc.status_code}: {exc.message}"
+            ) from exc
+        except openai.APIConnectionError as exc:
+            raise EmbeddingProviderError(
+                f"Azure OpenAI embedding request failed: {exc}"
+            ) from exc
+        except openai.APIError as exc:
+            raise EmbeddingProviderError(
+                f"Azure OpenAI embedding request failed: {exc}"
+            ) from exc
+
+        if len(response.data) != len(normalized):
+            raise EmbeddingProviderError("Azure OpenAI returned an unexpected number of embeddings.")
+
+        results: list[EmbeddingResult] = []
+        for item in response.data:
+            vector = item.embedding
+            results.append(
+                EmbeddingResult(
+                    vector=vector,
+                    model_name=self.model_name,
+                    dimensions=len(vector),
+                    provider=self.provider_name,
+                    metadata={
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "input_text_length": len(normalized[item.index]),
+                    },
+                )
+            )
+
+        _logger.debug(
+            "Azure OpenAI embeddings received: model=%r dimensions=%d count=%d tokens=%d",
+            self.model_name, results[0].dimensions, len(results), response.usage.prompt_tokens,
+        )
+        return results
+
+
 def build_embedding_provider(settings: EmbeddingSettings) -> EmbeddingProvider:
     """Instantiate the configured provider from resolved settings."""
     if settings.provider_name == "ollama":
@@ -425,6 +534,22 @@ def build_embedding_provider(settings: EmbeddingSettings) -> EmbeddingProvider:
         return HashingEmbeddingProvider(
             dimensions=settings.hashing_dimensions,
             model_name=settings.model_name or DEFAULT_HASH_MODEL,
+        )
+    if settings.provider_name == "azure-openai":
+        if not settings.azure_openai_endpoint:
+            raise BaldwinConfigurationError(
+                "AZURE_OPENAI_ENDPOINT is required when EMBEDDING_PROVIDER=azure-openai."
+            )
+        if not settings.azure_openai_api_key:
+            raise BaldwinConfigurationError(
+                "AZURE_OPENAI_API_KEY is required when EMBEDDING_PROVIDER=azure-openai."
+            )
+        return AzureOpenAIEmbeddingProvider(
+            endpoint=settings.azure_openai_endpoint,
+            api_key=settings.azure_openai_api_key,
+            model_name=settings.model_name or DEFAULT_AZURE_EMBEDDING_MODEL,
+            api_version=settings.azure_openai_api_version,
+            timeout_seconds=settings.timeout_seconds,
         )
     raise BaldwinConfigurationError(
         f"Unsupported embedding provider: {settings.provider_name}"
