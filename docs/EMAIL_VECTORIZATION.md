@@ -28,14 +28,18 @@ The script accepts the following settings:
 - `IMAP_PORT` (optional): IMAP port, default `993`.
 - `IMAP_FOLDERS` (optional): comma-separated default IMAP folder list, default `INBOX`.
 - `SCAN_MAIL_MAX_WORKERS` (optional): upper bound for threaded `scan-mail` fetch, normalization, and embedding stages, default `4`.
-- `EMBEDDING_PROVIDER` (optional): provider identifier, default `ollama`.
-- `EMBEDDING_BASE_URL` (optional): provider base URL, default `http://127.0.0.1:11434`.
-- `EMBEDDING_MODEL` (optional): model identifier, default `qllama/bge-small-en-v1.5`.
+- `EMBEDDING_PROVIDER` (optional): provider identifier, default `ollama`. Accepts `ollama`, `hashing`, or `azure-openai`.
+- `EMBEDDING_BASE_URL` (optional): provider base URL for Ollama, default `http://127.0.0.1:11434`.
+- `EMBEDDING_MODEL` (optional): model identifier, default `qllama/bge-small-en-v1.5`. When `azure-openai`, defaults to `text-embedding-3-small`.
 - `EMBEDDING_TIMEOUT_SECONDS` (optional): HTTP timeout, default `30`.
 - `EMBEDDING_ENABLE_FALLBACK` (optional): whether fallback is enabled, default `true`.
 - `EMBEDDING_FALLBACK_PROVIDER` (optional): fallback provider identifier, default `hashing`.
 - `EMBEDDING_HASH_DIMENSIONS` (optional): hashing vector dimension count, default `256`.
 - `EMAIL_VECTOR_DIMENSIONS` and `EMAIL_VECTOR_MODEL` remain accepted as compatibility aliases.
+- `AZURE_OPENAI_ENDPOINT` (required when `azure-openai`): base endpoint URL of the Azure OpenAI resource.
+- `AZURE_OPENAI_API_KEY` (required when `azure-openai`): Azure OpenAI API key.
+- `AZURE_OPENAI_API_VERSION` (optional when `azure-openai`): REST API version, default `2024-02-01`.
+- `BALDWIN_LOG_LEVEL` (optional): effective log level for all `baldwin.*` loggers. Accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`. Defaults to `WARNING`.
 
 ## Schema
 
@@ -107,11 +111,21 @@ The email adapter prefers `Message-ID` when it is present. If the upstream messa
 
 When the same message appears in multiple scanned folders, the mailbox vectorization runtime collapses those duplicates into one persisted document and stores folder provenance in `metadata.folders`, while `metadata.folder` preserves the first folder as a compatibility alias. When the IMAP server provides UIDs, the runtime also tracks the current UID per folder in `metadata.folder_uids`. IMAP flags and keywords are likewise persisted per folder in `metadata.folder_flags` and `metadata.folder_keywords` because the same logical message can have different mailbox state across folders.
 
+**Message-ID collision guard:** If two distinct messages share the same `Message-ID` (a known real-world occurrence with some mail clients), the runtime detects the content divergence via `content_checksum` comparison and re-keys the later message using a content-derived SHA-256 fingerprint instead of silently overwriting the earlier document. The re-keyed document is treated as a new insert.
+
 Each `scan-mail` ingestion run also records which persisted documents were observed, the current folder UID frontier, and whether previously tracked folder memberships disappeared from the server. If a folder membership disappears, the runtime removes that folder entry from `metadata.folders`, `metadata.folder_uids`, `metadata.folder_flags`, and `metadata.folder_keywords`. If a document no longer belongs to any tracked folder after reconciliation, the email document and its embeddings are deleted.
 
 ## Long Email Embeddings
 
 For Ollama-backed embeddings, long normalized emails are first attempted as a single input. If Ollama returns a context-length error, the runtime recursively splits the text on paragraph or whitespace boundaries, embeds the smaller chunks, and stores one normalized length-weighted aggregate vector for the original document. This keeps one embedding row per document/provider/model while reducing unnecessary fallback to hashing.
+
+## Logging
+
+All `baldwin.*` modules use structured JSON logging via `baldwin.log`. Each record is a single-line JSON object with the keys `timestamp`, `level`, `logger`, and `message`. When a trace ID is bound in the current context via `set_trace_id()`, a `trace_id` key is also included.
+
+`DEBUG` and `INFO` records are written to stdout. `WARNING` and above are written to stderr. This routing prevents the Azure Functions local host from flattening all log output to `INFO` colour due to raw-text inspection.
+
+The effective log level is controlled by `BALDWIN_LOG_LEVEL` (defaults to `WARNING`). Set `BALDWIN_LOG_LEVEL=DEBUG` locally to see per-email normalization, embedding, and persistence traces.
 
 ## Embedding Cost
 

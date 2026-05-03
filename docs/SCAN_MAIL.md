@@ -105,7 +105,7 @@ The scan-mail endpoint depends on the following environment variables:
 - `IMAP_INCREMENTAL_SYNC`: Optional toggle for UID-based incremental sync. Defaults to `true`.
 - `SCAN_MAIL_MAX_WORKERS`: Optional upper bound for threaded scan-mail fetch, normalization, and embedding stages. Defaults to `4`.
 - `DATABASE_URL`: Required PostgreSQL connection string for vector persistence.
-- `EMBEDDING_PROVIDER`: Optional embedding provider identifier.
+- `EMBEDDING_PROVIDER`: Optional embedding provider identifier. Accepts `ollama`, `hashing`, or `azure-openai`.
 - `EMBEDDING_BASE_URL`: Optional provider base URL.
 - `EMBEDDING_MODEL`: Optional embedding model identifier.
 - `EMBEDDING_TIMEOUT_SECONDS`: Optional provider timeout.
@@ -114,6 +114,10 @@ The scan-mail endpoint depends on the following environment variables:
 - `EMBEDDING_HASH_DIMENSIONS`: Optional hashing vector dimension count.
 - `EMAIL_VECTOR_DIMENSIONS`: Compatibility alias for hashing dimensions.
 - `EMAIL_VECTOR_MODEL`: Compatibility alias for embedding model name.
+- `AZURE_OPENAI_ENDPOINT`: Required when `EMBEDDING_PROVIDER=azure-openai`. Base endpoint URL of the Azure OpenAI resource.
+- `AZURE_OPENAI_API_KEY`: Required when `EMBEDDING_PROVIDER=azure-openai`.
+- `AZURE_OPENAI_API_VERSION`: Optional when `azure-openai`. Defaults to `2024-02-01`.
+- `BALDWIN_LOG_LEVEL`: Optional. Controls log verbosity for all `baldwin.*` loggers. Defaults to `WARNING`.
 
 ## Error Semantics
 

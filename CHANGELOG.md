@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0 - 2026-05-03
+
+- Added Azure OpenAI embedding provider (`EMBEDDING_PROVIDER=azure-openai`) backed by `openai>=1.0.0`. Requires `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, and optionally `AZURE_OPENAI_API_VERSION` (defaults to `2024-02-01`) and `EMBEDDING_MODEL` (defaults to `text-embedding-3-small`). The provider returns token-usage metadata and participates in the standard fallback chain.
+- Added content-based fingerprinting as a collision guard: when two messages share a `Message-ID` but differ in normalized content, the runtime now re-keys the later message to a content-derived SHA-256 fingerprint instead of silently overwriting the earlier document.
+- Added class-level connection pooling to `PostgresVectorStore` so concurrent `scan-mail` worker threads share a single `psycopg_pool.ConnectionPool` per database URL instead of opening a new connection per document.
+- Added batch upsert methods to `PostgresEmailVectorStore` and `PostgresVectorStore` to reduce round-trips during threaded ingestion.
+- Introduced structured JSON logging via a dedicated `_JsonFormatter` and `_LevelRoutingHandler` in `baldwin.log`. `DEBUG`/`INFO` records go to stdout; `WARNING`+  records go to stderr to prevent the Azure Functions local host from flattening severity.
+- Added `BALDWIN_LOG_LEVEL` environment variable to control the effective log level for all `baldwin.*` loggers (defaults to `WARNING`).
+- Added trace ID propagation via `set_trace_id()` in `baldwin.log`; the bound value is included in every JSON log record emitted within the same context, and Python's context-variable copying lets it propagate automatically into `ThreadPoolExecutor` worker threads.
+- Exported `AzureOpenAIEmbeddingProvider` from `baldwin.embedding` to complete the provider surface alongside `OllamaEmbeddingProvider` and `HashingEmbeddingProvider`.
+
 ## 0.6.0 - 2026-05-01
 
 - Replaced the generic `scan-mail` IMAP `502` response body with structured, client-actionable context: `error_code`, `reason_category`, and `folders`.

@@ -68,17 +68,25 @@ These should be set via `app_settings` in Terraform or `local.settings.json` for
 - `SMTP_PASSWORD`
 - `SMTP_FROM` (optional, defaults to `SMTP_USERNAME`)
 - `EMAILS_CONTAINER` (optional, defaults to `emails`)
-- `EMBEDDING_PROVIDER` (optional, defaults to `ollama`)
+- `EMBEDDING_PROVIDER` (optional, defaults to `ollama`; also accepts `azure-openai` or `hashing`)
 - `EMBEDDING_BASE_URL` (optional, defaults to `http://127.0.0.1:11434`)
-- `EMBEDDING_MODEL` (optional, defaults to `qllama/bge-small-en-v1.5`)
+- `EMBEDDING_MODEL` (optional, defaults to `qllama/bge-small-en-v1.5`; when `azure-openai`, defaults to `text-embedding-3-small`)
 - `EMBEDDING_TIMEOUT_SECONDS` (optional, defaults to `30`)
 - `EMBEDDING_ENABLE_FALLBACK` (optional, defaults to `true`)
 - `EMBEDDING_FALLBACK_PROVIDER` (optional, defaults to `hashing`)
 - `EMBEDDING_HASH_DIMENSIONS` (optional, defaults to `256`)
 - `EMAIL_VECTOR_DIMENSIONS` (optional compatibility alias for hashing dimensions)
 - `EMAIL_VECTOR_MODEL` (optional compatibility alias for embedding model)
+- `AZURE_OPENAI_ENDPOINT` (required when `EMBEDDING_PROVIDER=azure-openai`; must be the base endpoint URL of the Azure OpenAI resource)
+- `AZURE_OPENAI_API_KEY` (required when `EMBEDDING_PROVIDER=azure-openai`)
+- `AZURE_OPENAI_API_VERSION` (optional when `azure-openai`, defaults to `2024-02-01`)
+- `BALDWIN_LOG_LEVEL` (optional, controls log verbosity for all `baldwin.*` loggers; accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`; defaults to `WARNING`)
 
 For the vectorization script, `MAIL_USERNAME` and `MAIL_APP_PASSWORD` are also accepted as compatibility aliases for the IMAP credentials.
+
+### Infrastructure Dependencies
+
+When `EMBEDDING_PROVIDER=azure-openai`, the runtime requires an Azure OpenAI resource with an active embedding deployment. The resource endpoint, API key, and deployment name must be provided through `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, and `EMBEDDING_MODEL`. This resource must be provisioned separately (e.g. via the `azure-infra` Terraform workspace) and is not created by this repository.
 
 ## 🧪 Testing Locally
 
