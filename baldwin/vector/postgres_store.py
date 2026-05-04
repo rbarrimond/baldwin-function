@@ -111,6 +111,10 @@ class PostgresVectorStore:
         try:
             with psycopg.connect(self.database_url, autocommit=True) as connection:
                 with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_lock(hashtext(%s))",
+                        (f"baldwin_vector_bootstrap_{self.embedding_table}",),
+                    )
                     cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
                     cursor.execute(
                         sql.SQL(
@@ -163,6 +167,28 @@ class PostgresVectorStore:
                             constraint_name=sql.Identifier(f"{self.embedding_table}_pkey"),
                         )
                     )
+                    cursor.execute(
+                        """
+                        SELECT con.conname
+                        FROM pg_constraint con
+                        JOIN pg_class rel ON rel.oid = con.conrelid
+                        JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+                        WHERE con.contype = 'p'
+                          AND rel.relname = %s
+                          AND nsp.nspname = CURRENT_SCHEMA()
+                        """,
+                        (self.embedding_table,),
+                    )
+                    existing_pk_constraints = [row[0] for row in cursor.fetchall()]
+                    for constraint_name in existing_pk_constraints:
+                        cursor.execute(
+                            sql.SQL(
+                                "ALTER TABLE {embedding_table} DROP CONSTRAINT IF EXISTS {constraint_name}"
+                            ).format(
+                                embedding_table=embedding_table,
+                                constraint_name=sql.Identifier(constraint_name),
+                            )
+                        )
                     cursor.execute(
                         sql.SQL(
                             "ALTER TABLE {embedding_table} ADD CONSTRAINT {constraint_name} "

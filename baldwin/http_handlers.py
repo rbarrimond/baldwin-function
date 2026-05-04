@@ -11,6 +11,7 @@ import smtplib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.message import EmailMessage
+from threading import Lock
 from typing import Any, Callable, Mapping, Sequence, TypeVar
 from uuid import uuid4
 
@@ -184,6 +185,7 @@ class EmailIngestionService:
         self.settings = settings
         self.normalizer = EmailNormalizer()
         self._schema_ready = False
+        self._schema_lock = Lock()
 
     def _build_vector_store(self) -> PostgresEmailVectorStore:
         """Create the vector store from the current environment settings."""
@@ -203,8 +205,11 @@ class EmailIngestionService:
         """Create required persistence schema once per process lifecycle."""
         if self._schema_ready:
             return
-        vector_store.bootstrap()
-        self._schema_ready = True
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            vector_store.bootstrap()
+            self._schema_ready = True
 
     @staticmethod
     def _build_embedding_provider() -> Any:
@@ -826,11 +831,13 @@ class MailboxHttpHandlers:
 
             connection_string = self.settings.get_required("AzureWebJobsStorage")
             queue_name = self.settings.get("SCAN_MAIL_QUEUE_NAME") or "scan-mail-jobs"
+            queue_api_version = self.settings.get("QUEUE_API_VERSION") or None
             queue_client = QueueClient.from_connection_string(
                 connection_string,
                 queue_name,
                 message_encode_policy=None,
                 message_decode_policy=None,
+                api_version=queue_api_version,
             )
             try:
                 queue_client.create_queue()
@@ -878,10 +885,11 @@ class MailboxHttpHandlers:
             "Processing folder job: job_id=%r folder=%r days=%d",
             job_id, folder, days,
         )
-        store = self._get_scan_job_store()
-        store.mark_folder_started(job_id, folder)
+        store: ScanJobStore | None = None
 
         try:
+            store = self._get_scan_job_store()
+            store.mark_folder_started(job_id, folder)
             result = self.ingestion_service.ingest_folder(folder, days)
             stats = {
                 "total_fetched": result.total_fetched,
@@ -893,14 +901,61 @@ class MailboxHttpHandlers:
                 "sync_run_id": result.sync_run_id,
             }
             remaining = store.mark_folder_done(job_id, folder, stats)
-        except (EmailFetchError, EmbeddingProviderError, VectorStoreError, BaldwinConfigurationError) as exc:
+        except EmailFetchError as exc:
             _logger.exception(
                 "Folder job failed: job_id=%r folder=%r error=%s", job_id, folder, exc
             )
             error_info: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
-            remaining = store.mark_folder_failed(job_id, folder, error_info)
-            if remaining == 0:
-                self._finalize_folder_job(job_id)
+            if store is not None:
+                remaining = store.mark_folder_failed(job_id, folder, error_info)
+                if remaining == 0:
+                    self._finalize_folder_job(job_id)
+            if exc.reason_category == ImapReasonCategory.FOLDER:
+                _logger.info(
+                    "Not retrying non-retriable folder error: job_id=%r folder=%r",
+                    job_id,
+                    folder,
+                )
+                return
+            raise
+        except (EmbeddingProviderError, VectorStoreError) as exc:
+            _logger.exception(
+                "Folder job failed: job_id=%r folder=%r error=%s", job_id, folder, exc
+            )
+            error_info: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
+            if store is not None:
+                remaining = store.mark_folder_failed(job_id, folder, error_info)
+                if remaining == 0:
+                    self._finalize_folder_job(job_id)
+            raise
+        except BaldwinConfigurationError as exc:
+            _logger.exception(
+                "Configuration error in folder job (non-retriable): job_id=%r folder=%r",
+                job_id,
+                folder,
+            )
+            error_info = {"type": type(exc).__name__, "message": str(exc)}
+            if store is not None:
+                remaining = store.mark_folder_failed(job_id, folder, error_info)
+                if remaining == 0:
+                    self._finalize_folder_job(job_id)
+            # Do not re-raise — config errors are non-retriable; retrying won't help.
+        except Exception as exc:
+            _logger.exception(
+                "Unexpected error in folder job: job_id=%r folder=%r",
+                job_id,
+                folder,
+            )
+            if store is not None:
+                try:
+                    error_info = {"type": type(exc).__name__, "message": str(exc)}
+                    remaining = store.mark_folder_failed(job_id, folder, error_info)
+                    if remaining == 0:
+                        self._finalize_folder_job(job_id)
+                except Exception:
+                    _logger.exception(
+                        "Failed to record unexpected folder error in store: job_id=%r", job_id
+                    )
             raise
 
         if remaining == 0:

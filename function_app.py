@@ -23,6 +23,9 @@ import json
 import azure.functions as func
 from azure.functions import HttpRequest, HttpResponse
 from baldwin.http_handlers import build_http_handlers
+from baldwin.log import get_logger
+
+_logger = get_logger(__name__)
 
 app = func.FunctionApp()
 HANDLERS = build_http_handlers()
@@ -47,6 +50,11 @@ def get_scan_status(req: HttpRequest) -> HttpResponse:
 )
 def process_scan_folder(msg: func.QueueMessage) -> None:
     """Process a single folder ingestion dispatched from the scan queue."""
+    _logger.info(
+        "Queue trigger fired: id=%s dequeue_count=%d",
+        msg.id,
+        msg.dequeue_count,
+    )
     HANDLERS.process_folder_job(json.loads(msg.get_body().decode("utf-8")))
 
 @app.function_name(name="cleanup_scan_jobs")

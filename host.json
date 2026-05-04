@@ -11,7 +11,8 @@
   "extensions": {
     "queues": {
       "maxDequeueCount": 5,
-      "visibilityTimeout": "00:01:00"
+      "visibilityTimeout": "00:01:00",
+      "messageEncoding": "none"
     }
   },
   "extensionBundle": {
