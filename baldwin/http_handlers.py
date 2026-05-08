@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from email.message import EmailMessage
 from threading import Lock
 from typing import Any, Callable, Mapping, Sequence, TypeVar
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from azure.functions import HttpRequest, HttpResponse
 
@@ -1070,9 +1070,17 @@ class MailboxHttpHandlers:
 
     def get_scan_status(self, req: HttpRequest) -> HttpResponse:
         """Return the current status of an async scan job."""
-        job_id = req.route_params.get("job_id", "")
+        job_id = req.route_params.get("job_id", "").strip()
         if not job_id:
             return self.response_factory.json({"error": "job_id is required."}, status_code=400)
+        try:
+            UUID(job_id)
+        except ValueError:
+            _logger.warning("Invalid job_id format for scan status: job_id=%r", job_id)
+            return self.response_factory.json(
+                {"error": "job_id must be a valid UUID."},
+                status_code=400,
+            )
         try:
             status = self._get_scan_job_store().get_job_status(job_id)
             if status is None:

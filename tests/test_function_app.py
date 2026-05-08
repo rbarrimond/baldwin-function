@@ -315,6 +315,27 @@ class FunctionAppEndpointTests(unittest.TestCase):
         self.assertEqual(len(queue_client.sent_payloads), 2)
         store.mark_folders_failed.assert_not_called()
 
+    def test_get_scan_status_returns_400_for_invalid_job_id(self) -> None:
+        """Invalid UUID route params should be rejected as client errors before DB lookup."""
+        request = func.HttpRequest(
+            method="GET",
+            url="http://localhost/api/scan-mail/status/not-a-uuid",
+            headers={},
+            params={},
+            route_params={"job_id": "261bff6-10c7-43df-808c-585fe3f3771d"},
+            body=b"",
+        )
+
+        with patch.object(function_app.HANDLERS, "_get_scan_job_store") as get_store:
+            response = function_app.get_scan_status(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            json.loads(response.get_body()),
+            {"error": "job_id must be a valid UUID."},
+        )
+        get_store.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
