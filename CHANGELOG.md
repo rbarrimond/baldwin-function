@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Added resilience to per-message IMAP fetch failures: transient server responses (`"No such message"`, expunged messages, invalid messagesets) are now logged at WARNING and skipped instead of failing the entire folder job. Folder-level operations (SELECT, SEARCH, UID enumeration) and other IMAP errors remain hard failures.
+- Added resilience to per-message IMAP fetch failures: permanent message-specific misses (`"no such message"`, `"expunged"`, `"invalid messageset"`) are logged at WARNING and skipped, and transient service failures (such as iCloud `[UNAVAILABLE]`) are retried locally with exponential backoff before that single message is skipped.
+- Added ERROR-level logging of per-message IMAP fetch failures to aid diagnostics.
 
 ## 0.8.0 - 2026-06-01
 

@@ -220,6 +220,76 @@ class EmailServiceConnectionTests(unittest.TestCase):
         )
         mail.logout.assert_called_once_with()
 
+    @patch("baldwin.email.email_service.time.sleep", return_value=None)
+    @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
+    def test_fetch_emails_retries_transient_unavailable_then_succeeds(
+        self,
+        imap4_ssl: Mock,
+        sleep_mock: Mock,
+    ) -> None:
+        """Transient IMAP UNAVAILABLE failures should be retried before succeeding."""
+        message = EmailMessage()
+        message["Message-ID"] = "<message-1@example.com>"
+        message["Subject"] = "Inbox subject"
+        message["From"] = "sender@example.com"
+        message["Date"] = "Fri, 11 Apr 2026 09:15:00 +0000"
+        message.set_content("Inbox body")
+
+        mail = Mock()
+        mail.select.return_value = ("OK", [b"1"])
+        mail.search.return_value = ("OK", [b"1"])
+        mail.uid.return_value = ("OK", [b"101"])
+        mail.response.side_effect = [
+            (b"UIDVALIDITY", [b"999"]),
+            (b"UIDNEXT", [b"102"]),
+        ]
+        mail.fetch.side_effect = [
+            ("NO", [b"[UNAVAILABLE] Service temporarily unavailable"]),
+            ("OK", [(b"1", message.as_bytes())]),
+        ]
+        imap4_ssl.return_value = mail
+        service = EmailService("user@example.com", "password")
+
+        result = service.fetch_emails(1, MailboxFolders.from_values(["INBOX"]))
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].subject, "Inbox subject")
+        self.assertEqual(mail.fetch.call_count, 2)
+        sleep_mock.assert_called_once_with(0.5)
+
+    @patch("baldwin.email.email_service.time.sleep", return_value=None)
+    @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
+    def test_fetch_emails_skips_after_transient_unavailable_retries_exhausted(
+        self,
+        imap4_ssl: Mock,
+        sleep_mock: Mock,
+    ) -> None:
+        """Repeated transient IMAP UNAVAILABLE failures should skip a single message after retries."""
+        mail = Mock()
+        mail.select.return_value = ("OK", [b"1"])
+        mail.search.return_value = ("OK", [b"1"])
+        mail.uid.return_value = ("OK", [b"101"])
+        mail.response.side_effect = [
+            (b"UIDVALIDITY", [b"999"]),
+            (b"UIDNEXT", [b"102"]),
+        ]
+        mail.fetch.side_effect = [
+            ("NO", [b"[UNAVAILABLE] Service temporarily unavailable"]),
+            ("NO", [b"[UNAVAILABLE] Service temporarily unavailable"]),
+            ("NO", [b"[UNAVAILABLE] Service temporarily unavailable"]),
+        ]
+        imap4_ssl.return_value = mail
+        service = EmailService("user@example.com", "password")
+
+        result = service.fetch_emails(1, MailboxFolders.from_values(["INBOX"]))
+
+        self.assertEqual(result, [])
+        self.assertEqual(mail.fetch.call_count, 3)
+        self.assertEqual(sleep_mock.call_count, 2)
+        sleep_mock.assert_any_call(0.5)
+        sleep_mock.assert_any_call(1.0)
+        mail.logout.assert_called_once_with()
+
     @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
     def test_get_folder_status_returns_uid_state(self, imap4_ssl: Mock) -> None:
         """Folder inspection should expose UIDVALIDITY, UIDNEXT, and current UID membership."""

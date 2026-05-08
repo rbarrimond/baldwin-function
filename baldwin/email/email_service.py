@@ -5,6 +5,7 @@ import email
 import imaplib
 import re
 import ssl
+import time
 from dataclasses import dataclass
 from email.header import decode_header
 from email.message import Message
@@ -36,10 +37,19 @@ _SYSTEM_IMAP_FLAGS = {
 _SKIPPABLE_FETCH_FAILURE_TOKENS = (
     "no such message",
     "not found",
-    "already expunged",
-    "has been expunged",
+    "expunged",
     "invalid messageset",
 )
+_RETRYABLE_FETCH_FAILURE_TOKENS = (
+    "[unavailable]",
+    "temporarily unavailable",
+    "service temporarily unavailable",
+    "try again",
+    "too many requests",
+    "rate limit",
+)
+_FETCH_RETRY_MAX_ATTEMPTS = 3
+_FETCH_RETRY_BASE_DELAY_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -349,23 +359,14 @@ class EmailService:
         use_uid: bool = False,
     ) -> List[Email]:
         identifier = email_id.decode("ascii")
-        if use_uid:
-            status, message_data = mail.uid("fetch", identifier, "(FLAGS BODY.PEEK[])")
-        else:
-            status, message_data = mail.fetch(identifier, "(FLAGS BODY.PEEK[])")
-        if status != "OK":
-            reason = self._extract_imap_failure_reason(message_data)
-            if self._is_skippable_fetch_failure(reason):
-                _logger.warning(
-                    "Skipping IMAP message fetch after non-fatal server response: id=%s folder=%r reason=%r",
-                    identifier,
-                    folder,
-                    reason,
-                )
-                return []
-            raise EmailFetchError(
-                f"Unable to fetch email payload for id={identifier} in folder '{folder}'."
-            )
+        message_data = self._fetch_message_data_with_retry(
+            mail,
+            identifier,
+            folder,
+            use_uid=use_uid,
+        )
+        if message_data is None:
+            return []
 
         parsed_messages: List[Email] = []
 
@@ -391,6 +392,73 @@ class EmailService:
 
         return parsed_messages
 
+    def _fetch_message_data_with_retry(
+        self,
+        mail: imaplib.IMAP4,
+        identifier: str,
+        folder: str,
+        *,
+        use_uid: bool = False,
+    ) -> Sequence[object] | None:
+        for attempt in range(_FETCH_RETRY_MAX_ATTEMPTS):
+            if use_uid:
+                status, message_data = mail.uid("fetch", identifier, "(FLAGS BODY.PEEK[])")
+            else:
+                status, message_data = mail.fetch(identifier, "(FLAGS BODY.PEEK[])")
+
+            if status == "OK":
+                if isinstance(message_data, list):
+                    return message_data
+                return []
+
+            reason = self._extract_imap_failure_reason(message_data)
+            _logger.error(
+                "IMAP FETCH failed: status=%s id=%s folder=%r attempt=%d/%d reason=%r",
+                status,
+                identifier,
+                folder,
+                attempt + 1,
+                _FETCH_RETRY_MAX_ATTEMPTS,
+                reason,
+            )
+
+            if self._is_skippable_fetch_failure(reason):
+                _logger.warning(
+                    "Skipping IMAP message fetch after non-fatal server response: id=%s folder=%r reason=%r",
+                    identifier,
+                    folder,
+                    reason,
+                )
+                return None
+
+            if not self._is_retryable_fetch_failure(reason):
+                raise EmailFetchError(
+                    f"Unable to fetch email payload for id={identifier} in folder '{folder}'."
+                )
+
+            if attempt + 1 < _FETCH_RETRY_MAX_ATTEMPTS:
+                delay_seconds = _FETCH_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
+                _logger.warning(
+                    "Retrying IMAP FETCH after transient failure: id=%s folder=%r next_attempt=%d delay=%.2fs reason=%r",
+                    identifier,
+                    folder,
+                    attempt + 2,
+                    delay_seconds,
+                    reason,
+                )
+                time.sleep(delay_seconds)
+                continue
+
+            _logger.warning(
+                "Skipping IMAP message after transient failure retries exhausted: id=%s folder=%r reason=%r",
+                identifier,
+                folder,
+                reason,
+            )
+            return None
+
+        return None
+
     @staticmethod
     def _extract_imap_failure_reason(message_data: object) -> str:
         if not isinstance(message_data, list):
@@ -410,6 +478,13 @@ class EmailService:
         if not normalized:
             return False
         return any(token in normalized for token in _SKIPPABLE_FETCH_FAILURE_TOKENS)
+
+    @staticmethod
+    def _is_retryable_fetch_failure(reason: str) -> bool:
+        normalized = reason.strip().lower()
+        if not normalized:
+            return False
+        return any(token in normalized for token in _RETRYABLE_FETCH_FAILURE_TOKENS)
 
     def _select_folder_status(self, mail: imaplib.IMAP4, folder: str) -> MailboxFolderStatus:
         status, data = mail.select(self._format_mailbox_argument(folder))

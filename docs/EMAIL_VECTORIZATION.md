@@ -10,11 +10,12 @@ The `scan-mail` HTTP path now uses bounded multithreading for per-folder fetch, 
 
 ### Resilience
 
-Per-message IMAP fetch operations are resilient to transient server responses:
-- A message fetch that receives `NO` status with reason text matching `"no such message"`, `"expunged"`, or similar is logged at WARNING and skipped.
+Per-message IMAP fetch operations are resilient to permanent message-specific failures:
+- A message fetch that receives `NO` status with reason text matching `"no such message"`, `"expunged"`, or `"invalid messageset"` is logged at WARNING and skipped.
 - The folder job continues ingesting remaining messages in the batch.
-- Folder-level operations (SELECT, SEARCH, UID enumeration) and other IMAP protocol errors remain hard failures that propagate as `EmailFetchError`.
-- This allows mailbox ingestion to continue in the face of concurrent mailbox churn (deletions/expunges between SEARCH and FETCH).
+- Transient service issues (e.g., iCloud `[UNAVAILABLE]`) are retried locally with bounded exponential backoff before the single message is skipped.
+- Folder-level operations (SELECT, SEARCH, UID enumeration) and all other IMAP protocol errors remain hard failures that propagate as `EmailFetchError`.
+- This allows mailbox ingestion to continue in the face of concurrent mailbox churn (permanent deletions/expunges between SEARCH and FETCH) and transient backend throttling/outages without failing an entire folder job.
 
 ## Scope
 
