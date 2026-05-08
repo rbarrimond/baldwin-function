@@ -34,8 +34,9 @@ class PostgresVectorStoreTests(unittest.TestCase):
 
         store.bootstrap()
 
-        self.assertEqual(cursor.execute.call_count, 7)
+        self.assertGreaterEqual(cursor.execute.call_count, 9)
         statements = [str(call.args[0]) for call in cursor.execute.call_args_list]
+        self.assertTrue(any("pg_advisory_lock" in statement for statement in statements))
         self.assertTrue(any("provider TEXT NOT NULL" in statement for statement in statements))
         self.assertTrue(any("PRIMARY KEY (document_id, provider, model_name)" in statement for statement in statements))
 
