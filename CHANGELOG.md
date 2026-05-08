@@ -5,8 +5,10 @@
 - Added async, queue-backed scan-mail ingestion: `POST /api/scan-mail` now enqueues one Azure Storage Queue message per IMAP folder and returns `202 Accepted` with a job ID, decoupling response latency from mailbox size.
 - Added `GET /api/scan-mail/status/{job_id}` to poll per-job and per-folder ingestion status from PostgreSQL.
 - Added `process_scan_folder` queue trigger (`scan-mail-jobs`) to process individual folder jobs with Azure Functions built-in retry semantics (`maxDequeueCount=5`).
+- Added `process_scan_folder_poison` queue trigger (`scan-mail-jobs-poison`) so terminal dequeue failures are persisted as folder failures and still finalize their parent scan jobs.
 - Added `cleanup_scan_jobs` timer trigger (daily at 02:00 UTC) to delete expired job tracking records, configurable via `SCAN_JOB_RETENTION_DAYS` (default: 30 days).
 - Added `baldwin/jobs.py` — `ScanJobStore` class backed by two new PostgreSQL tables (`scan_jobs`, `scan_job_folders`) for job-level and folder-level status tracking.
+- Hardened async folder/job status transitions: retries now preserve initial folder start timestamps, successful retries clear stale `error_json`, completed folders are protected from late retry-failure overwrites, and finalization now no-ops until all folders are terminal.
 - Fixed multi-folder JSONB merge correctness: `PostgresEmailVectorStore` now overrides `_upsert_email_on_connection()` with an `ON CONFLICT DO UPDATE` clause that performs a set-union merge of `folders`, `folder_uids`, `folder_flags`, and `folder_keywords` instead of overwriting them. This prevents a concurrent folder job from erasing folder membership recorded by an earlier job.
 - Moved `delete_documents_without_folders()` out of per-folder ingestion into a single post-completion step in `_finalize_folder_job()`, ensuring stale cleanup runs only once all parallel folder jobs have finished.
 - Deprecated `GET /api/scan-mail`; the synchronous endpoint now returns a `_deprecation_notice` field in its response and remains available for backwards compatibility.

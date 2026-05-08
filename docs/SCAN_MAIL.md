@@ -91,12 +91,15 @@ Each message placed on `scan-mail-jobs` has the following JSON body:
 
 Messages are sent as raw UTF-8 JSON (no base64 encoding). The `QueueClient` is created with `message_encode_policy=None`.
 
+If enqueuing fails partway through a folder list, Baldwin records only the unsent folders as failed (`QueueEnqueueError`) so scan status remains accurate and does not leave orphan `pending` rows.
+
 ### Async Flow Sequence
 
 1. `POST /api/scan-mail` — parse request, allocate `job_id`, persist job + folder rows in PostgreSQL (`scan_jobs`, `scan_job_folders`), create queue if absent, enqueue one message per folder.
 2. `process_scan_folder` (queue trigger) — for each message: marks folder `in_progress`, calls `ingest_folder()`, marks `completed` or `failed` with stats/error, decrements remaining count.
-3. When `remaining == 0` — `_finalize_folder_job()` runs `delete_documents_without_folders()` then marks the job `completed` (or `partial` if any folder failed).
-4. `cleanup_scan_jobs` (timer trigger at 02:00 UTC daily) — deletes job records older than `SCAN_JOB_RETENTION_DAYS`.
+3. If a folder message exceeds `maxDequeueCount`, Azure moves it to `scan-mail-jobs-poison`; `process_scan_folder_poison` records a terminal folder failure (`QueuePoisonError`) and participates in normal job finalization.
+4. When `remaining == 0` — `_finalize_folder_job()` runs `delete_documents_without_folders()` then marks the job `completed` (or `partial` if any folder failed).
+5. `cleanup_scan_jobs` (timer trigger at 02:00 UTC daily) — deletes job records older than `SCAN_JOB_RETENTION_DAYS`.
 
 ### Multi-Folder JSONB Correctness
 
@@ -219,6 +222,8 @@ The scan-mail endpoint depends on the following environment variables:
 - `IMAP_FOLDERS`: Optional default comma-separated IMAP folder list.
 - `IMAP_INCREMENTAL_SYNC`: Optional toggle for UID-based incremental sync. Defaults to `true`.
 - `SCAN_MAIL_MAX_WORKERS`: Optional upper bound for threaded scan-mail fetch, normalization, and embedding stages. Defaults to `4`.
+- `SCAN_MAIL_QUEUE_NAME`: Optional queue name used by async folder ingestion producer and consumer. Defaults to `scan-mail-jobs`.
+- `SCAN_MAIL_POISON_QUEUE_NAME`: Optional poison queue override for terminal dequeue failures. Defaults to `${SCAN_MAIL_QUEUE_NAME}-poison`.
 - `DATABASE_URL`: Required PostgreSQL connection string for vector persistence.
 - `EMBEDDING_PROVIDER`: Optional embedding provider identifier. Accepts `ollama`, `hashing`, or `azure-openai`.
 - `EMBEDDING_BASE_URL`: Optional provider base URL.

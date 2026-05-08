@@ -14,6 +14,11 @@ from baldwin.log import get_logger
 _logger = get_logger(__name__)
 
 _FOLDER_STATUS_ERROR = "Failed to update folder job status."
+_ACTIVE_FOLDER_COUNT_SQL = """
+                                                SELECT COUNT(*) FROM scan_job_folders
+                                                WHERE job_id = %(job_id)s::uuid
+                                                    AND status NOT IN ('completed', 'failed')
+                                                """
 
 
 class ScanJobStore:
@@ -116,7 +121,8 @@ class ScanJobStore:
                     cursor.execute(
                         """
                         UPDATE scan_job_folders
-                        SET status = 'in_progress', started_at = NOW()
+                        SET status = 'in_progress',
+                            started_at = COALESCE(started_at, NOW())
                         WHERE job_id = %(job_id)s::uuid AND folder = %(folder)s
                         """,
                         {"job_id": job_id, "folder": folder},
@@ -150,7 +156,8 @@ class ScanJobStore:
                         """
                         UPDATE scan_job_folders
                         SET status = 'completed', completed_at = NOW(),
-                            stats_json = %(stats_json)s::jsonb
+                            stats_json = %(stats_json)s::jsonb,
+                            error_json = NULL
                         WHERE job_id = %(job_id)s::uuid AND folder = %(folder)s
                         """,
                         {
@@ -159,14 +166,7 @@ class ScanJobStore:
                             "stats_json": json.dumps(stats),
                         },
                     )
-                    cursor.execute(
-                        """
-                        SELECT COUNT(*) FROM scan_job_folders
-                        WHERE job_id = %(job_id)s::uuid
-                          AND status NOT IN ('completed', 'failed')
-                        """,
-                        {"job_id": job_id},
-                    )
+                    cursor.execute(_ACTIVE_FOLDER_COUNT_SQL, {"job_id": job_id})
                     row = cursor.fetchone()
                     remaining = int(row[0]) if row else 0
                 connection.commit()
@@ -192,8 +192,11 @@ class ScanJobStore:
                         """
                         UPDATE scan_job_folders
                         SET status = 'failed', completed_at = NOW(),
-                            error_json = %(error_json)s::jsonb
-                        WHERE job_id = %(job_id)s::uuid AND folder = %(folder)s
+                            error_json = %(error_json)s::jsonb,
+                            stats_json = NULL
+                        WHERE job_id = %(job_id)s::uuid
+                          AND folder = %(folder)s
+                          AND status <> 'completed'
                         """,
                         {
                             "job_id": job_id,
@@ -201,14 +204,7 @@ class ScanJobStore:
                             "error_json": json.dumps(error),
                         },
                     )
-                    cursor.execute(
-                        """
-                        SELECT COUNT(*) FROM scan_job_folders
-                        WHERE job_id = %(job_id)s::uuid
-                          AND status NOT IN ('completed', 'failed')
-                        """,
-                        {"job_id": job_id},
-                    )
+                    cursor.execute(_ACTIVE_FOLDER_COUNT_SQL, {"job_id": job_id})
                     row = cursor.fetchone()
                     remaining = int(row[0]) if row else 0
                 connection.commit()
@@ -220,6 +216,47 @@ class ScanJobStore:
             )
             raise VectorStoreError(_FOLDER_STATUS_ERROR) from exc
 
+    def mark_folders_failed(
+        self,
+        job_id: str,
+        folders: list[str],
+        error: dict[str, Any],
+    ) -> int:
+        """Mark multiple folders failed and return count of still-active folders."""
+        if not folders:
+            return 0
+        try:
+            with psycopg.connect(self.database_url) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        UPDATE scan_job_folders
+                        SET status = 'failed', completed_at = NOW(),
+                            error_json = %(error_json)s::jsonb,
+                            stats_json = NULL
+                        WHERE job_id = %(job_id)s::uuid
+                          AND folder = ANY(%(folders)s)
+                          AND status <> 'completed'
+                        """,
+                        {
+                            "job_id": job_id,
+                            "folders": folders,
+                            "error_json": json.dumps(error),
+                        },
+                    )
+                    cursor.execute(_ACTIVE_FOLDER_COUNT_SQL, {"job_id": job_id})
+                    row = cursor.fetchone()
+                    remaining = int(row[0]) if row else 0
+                connection.commit()
+            return remaining
+        except psycopg.Error as exc:
+            _logger.exception(
+                "Database error marking folders failed: job_id=%r folder_count=%d",
+                job_id,
+                len(folders),
+            )
+            raise VectorStoreError(_FOLDER_STATUS_ERROR) from exc
+
     def finalize_job(self, job_id: str) -> None:
         """Mark a scan job as completed or partial based on folder outcomes."""
         try:
@@ -228,6 +265,9 @@ class ScanJobStore:
                     cursor.execute(
                         """
                         SELECT
+                            COUNT(*) FILTER (
+                                WHERE status NOT IN ('completed', 'failed')
+                            ) AS remaining_count,
                             COUNT(*) FILTER (WHERE status = 'failed') AS failed_count,
                             COUNT(*) FILTER (WHERE status = 'completed') AS completed_count
                         FROM scan_job_folders
@@ -238,13 +278,17 @@ class ScanJobStore:
                     row = cursor.fetchone()
                     if row is None:
                         return
-                    failed_count = row[0]
+                    remaining_count = row[0]
+                    failed_count = row[1]
+                    if remaining_count > 0:
+                        return
                     final_status = "partial" if failed_count > 0 else "completed"
                     cursor.execute(
                         """
                         UPDATE scan_jobs
                         SET status = %(status)s, completed_at = NOW()
                         WHERE job_id = %(job_id)s::uuid
+                          AND status IN ('pending', 'in_progress')
                         """,
                         {"job_id": job_id, "status": final_status},
                     )

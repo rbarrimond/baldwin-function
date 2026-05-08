@@ -7,9 +7,10 @@ import os
 import smtplib
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import azure.functions as func
+from azure.core.exceptions import AzureError
 
 import function_app
 from baldwin.email import EmailDeliveryError, EmailFetchError, MailboxFolders
@@ -30,6 +31,11 @@ def _json_request(method: str, url: str, payload: dict | None = None, params: di
 
 class FunctionAppEndpointTests(unittest.TestCase):
     """HTTP-level regression tests for function handlers."""
+
+    def test_queue_name_defaults_are_consistent(self) -> None:
+        """Queue and poison queue names should derive from the same base default."""
+        self.assertEqual(function_app.SCAN_MAIL_QUEUE_NAME, "scan-mail-jobs")
+        self.assertEqual(function_app.SCAN_MAIL_POISON_QUEUE_NAME, "scan-mail-jobs-poison")
 
     def test_summarize_email_returns_summary_payload(self) -> None:
         """The summarize_email endpoint should return a JSON payload with the generated summary."""
@@ -159,6 +165,155 @@ class FunctionAppEndpointTests(unittest.TestCase):
             json.loads(response.get_body()),
             {"error": "Recipient, subject, and content are required to send a digest."},
         )
+
+    def test_process_scan_folder_poison_forwards_payload_to_handlers(self) -> None:
+        """Poison queue trigger should forward decoded payload to the poison handler."""
+
+        class _Message:
+            id = "msg-1"
+
+            @staticmethod
+            def get_body() -> bytes:
+                """Simulate a poison message payload with job and folder details."""
+                return b'{"job_id":"job-1","folder":"Archive","days":30}'
+
+        with patch.object(function_app.HANDLERS, "process_poison_folder_job") as poison_handler:
+            function_app.process_scan_folder_poison(_Message())
+
+        poison_handler.assert_called_once_with(
+            {"job_id": "job-1", "folder": "Archive", "days": 30}
+        )
+
+    def test_process_scan_folder_forwards_payload_to_handlers(self) -> None:
+        """Primary queue trigger should forward decoded payload to the folder-job handler."""
+
+        class _Message:
+            id = "msg-2"
+            dequeue_count = 3
+
+            @staticmethod
+            def get_body() -> bytes:
+                """Simulate a queue message payload with job and folder details."""
+                return b'{"job_id":"job-2","folder":"Inbox","days":14}'
+
+        with patch.object(function_app.HANDLERS, "process_folder_job") as folder_handler:
+            function_app.process_scan_folder(_Message())
+
+        folder_handler.assert_called_once_with(
+            {"job_id": "job-2", "folder": "Inbox", "days": 14}
+        )
+
+    def test_cleanup_scan_jobs_forwards_to_handlers(self) -> None:
+        """Timer trigger wrapper should delegate cleanup work to handlers."""
+        with patch.object(function_app.HANDLERS, "cleanup_scan_jobs") as cleanup_handler:
+            function_app.cleanup_scan_jobs(MagicMock())
+
+        cleanup_handler.assert_called_once_with()
+
+    def test_enqueue_scan_marks_unsent_folders_failed_when_queue_send_breaks(self) -> None:
+        """Queue send failures should mark only unsent folders failed for status correctness."""
+
+        class _QueueClient:
+            def __init__(self) -> None:
+                self._calls = 0
+
+            def create_queue(self) -> None:
+                """Simulate successful queue creation."""
+                return None
+
+            def send_message(self, _payload: str) -> None:
+                """Simulate a transient queue send failure after the first message."""
+                self._calls += 1
+                if self._calls > 1:
+                    raise AzureError("queue send failed")
+
+        request = _json_request(
+            "POST",
+            "http://localhost/api/scan-mail",
+            params={"days": "1", "folders": "INBOX,Archive,Bulk"},
+        )
+
+        store = MagicMock()
+        store.mark_folders_failed.return_value = 2
+
+        with patch.dict(os.environ, {"AzureWebJobsStorage": "UseDevelopmentStorage=true"}, clear=False):
+            with patch.object(function_app.HANDLERS, "_get_scan_job_store", return_value=store):
+                with patch("baldwin.http_handlers.QueueClient.from_connection_string", return_value=_QueueClient()):
+                    response = function_app.enqueue_scan(request)
+
+        self.assertEqual(response.status_code, 500)
+        store.mark_folders_failed.assert_called_once()
+        unsent = store.mark_folders_failed.call_args.args[1]
+        self.assertEqual(unsent, ["Archive", "Bulk"])
+
+    def test_enqueue_scan_finalizes_when_all_folders_unsent(self) -> None:
+        """If no folder messages are sent, enqueue failure should finalize the job immediately."""
+
+        class _QueueClient:
+            @staticmethod
+            def create_queue() -> None:
+                """Simulate successful queue creation."""
+                return None
+
+            @staticmethod
+            def send_message(_payload: str) -> None:
+                """Simulate a queue send failure for all folders."""
+                raise AzureError("queue unavailable")
+
+        request = _json_request(
+            "POST",
+            "http://localhost/api/scan-mail",
+            params={"days": "1", "folders": "INBOX,Archive"},
+        )
+
+        store = MagicMock()
+        store.mark_folders_failed.return_value = 0
+
+        with patch.dict(os.environ, {"AzureWebJobsStorage": "UseDevelopmentStorage=true"}, clear=False):
+            with patch.object(function_app.HANDLERS, "_get_scan_job_store", return_value=store):
+                with patch.object(function_app.HANDLERS, "_finalize_folder_job") as finalize_job:
+                    with patch("baldwin.http_handlers.QueueClient.from_connection_string", return_value=_QueueClient()):
+                        response = function_app.enqueue_scan(request)
+
+        self.assertEqual(response.status_code, 500)
+        finalize_job.assert_called_once()
+
+    def test_enqueue_scan_returns_202_when_all_folder_messages_sent(self) -> None:
+        """Successful enqueue should return 202 and avoid failure bookkeeping."""
+
+        class _QueueClient:
+            def __init__(self) -> None:
+                self.sent_payloads: list[str] = []
+
+            @staticmethod
+            def create_queue() -> None:
+                """Simulate successful queue creation."""
+                return None
+
+            def send_message(self, payload: str) -> None:
+                """Simulate successful sends for all folders."""
+                self.sent_payloads.append(payload)
+
+        queue_client = _QueueClient()
+        request = _json_request(
+            "POST",
+            "http://localhost/api/scan-mail",
+            params={"days": "1", "folders": "INBOX,Archive"},
+        )
+
+        store = MagicMock()
+
+        with patch.dict(os.environ, {"AzureWebJobsStorage": "UseDevelopmentStorage=true"}, clear=False):
+            with patch.object(function_app.HANDLERS, "_get_scan_job_store", return_value=store):
+                with patch("baldwin.http_handlers.QueueClient.from_connection_string", return_value=queue_client):
+                    response = function_app.enqueue_scan(request)
+
+        self.assertEqual(response.status_code, 202)
+        payload = json.loads(response.get_body())
+        self.assertEqual(payload["folder_count"], 2)
+        self.assertIn("job_id", payload)
+        self.assertEqual(len(queue_client.sent_payloads), 2)
+        store.mark_folders_failed.assert_not_called()
 
 
 if __name__ == "__main__":

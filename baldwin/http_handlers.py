@@ -816,6 +816,10 @@ class MailboxHttpHandlers:
     def enqueue_scan(self, req: HttpRequest) -> HttpResponse:
         """Enqueue an async scan job per folder and return 202 with a job ID."""
         set_trace_id(self._resolve_trace_id(req))
+        job_id: str | None = None
+        folders: list[str] = []
+        enqueued_folders: list[str] = []
+        store: ScanJobStore | None = None
         try:
             scan_request = self.request_parser.parse_scan_request(req)
             folders = list(scan_request.folders.folders)
@@ -839,15 +843,13 @@ class MailboxHttpHandlers:
                 message_decode_policy=None,
                 api_version=queue_api_version,
             )
-            try:
-                queue_client.create_queue()
-            except ResourceExistsError:
-                pass
-
-            for folder in folders:
-                queue_client.send_message(
-                    json.dumps({"job_id": job_id, "folder": folder, "days": scan_request.days})
-                )
+            self._enqueue_folder_messages(
+                queue_client=queue_client,
+                job_id=job_id,
+                folders=folders,
+                days=scan_request.days,
+                enqueued_folders=enqueued_folders,
+            )
 
             _logger.info(
                 "Scan job enqueued: job_id=%r folder_count=%d days=%d",
@@ -870,9 +872,70 @@ class MailboxHttpHandlers:
             _logger.warning("Invalid request for enqueue_scan: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
         except (VectorStoreError, AzureError) as exc:
+            self._record_unsent_folder_failures(
+                store=store,
+                job_id=job_id,
+                folders=folders,
+                enqueued_folders=enqueued_folders,
+            )
             _logger.exception("Error enqueuing scan job: %s", exc)
             return self.response_factory.json(
                 {"error": INTERNAL_SERVER_ERROR_MESSAGE}, status_code=500
+            )
+
+    @staticmethod
+    def _enqueue_folder_messages(
+        *,
+        queue_client: QueueClient,
+        job_id: str,
+        folders: list[str],
+        days: int,
+        enqueued_folders: list[str],
+    ) -> None:
+        """Create queue if needed and enqueue one message per requested folder."""
+        try:
+            queue_client.create_queue()
+        except ResourceExistsError:
+            pass
+
+        for folder in folders:
+            queue_client.send_message(
+                json.dumps({"job_id": job_id, "folder": folder, "days": days})
+            )
+            enqueued_folders.append(folder)
+
+    def _record_unsent_folder_failures(
+        self,
+        *,
+        store: ScanJobStore | None,
+        job_id: str | None,
+        folders: list[str],
+        enqueued_folders: list[str],
+    ) -> None:
+        """Persist enqueue failures for folders that were never queued."""
+        if store is None or job_id is None or not folders:
+            return
+
+        unsent_folders = [folder for folder in folders if folder not in enqueued_folders]
+        if not unsent_folders:
+            return
+
+        try:
+            remaining = store.mark_folders_failed(
+                job_id,
+                unsent_folders,
+                {
+                    "type": "QueueEnqueueError",
+                    "message": "Folder job was not enqueued due to queue failure.",
+                },
+            )
+            if remaining == 0:
+                self._finalize_folder_job(job_id)
+        except VectorStoreError:
+            _logger.exception(
+                "Failed to persist unsent folder failures: job_id=%r unsent=%d",
+                job_id,
+                len(unsent_folders),
             )
 
     def process_folder_job(self, msg_body: dict[str, Any]) -> None:
@@ -886,6 +949,7 @@ class MailboxHttpHandlers:
             job_id, folder, days,
         )
         store: ScanJobStore | None = None
+        remaining: int | None = None
 
         try:
             store = self._get_scan_job_store()
@@ -905,11 +969,7 @@ class MailboxHttpHandlers:
             _logger.exception(
                 "Folder job failed: job_id=%r folder=%r error=%s", job_id, folder, exc
             )
-            error_info: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
-            if store is not None:
-                remaining = store.mark_folder_failed(job_id, folder, error_info)
-                if remaining == 0:
-                    self._finalize_folder_job(job_id)
+            self._record_folder_job_failure(store, job_id, folder, exc)
             if exc.reason_category == ImapReasonCategory.FOLDER:
                 _logger.info(
                     "Not retrying non-retriable folder error: job_id=%r folder=%r",
@@ -922,11 +982,7 @@ class MailboxHttpHandlers:
             _logger.exception(
                 "Folder job failed: job_id=%r folder=%r error=%s", job_id, folder, exc
             )
-            error_info: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
-            if store is not None:
-                remaining = store.mark_folder_failed(job_id, folder, error_info)
-                if remaining == 0:
-                    self._finalize_folder_job(job_id)
+            self._record_folder_job_failure(store, job_id, folder, exc)
             raise
         except BaldwinConfigurationError as exc:
             _logger.exception(
@@ -934,11 +990,7 @@ class MailboxHttpHandlers:
                 job_id,
                 folder,
             )
-            error_info = {"type": type(exc).__name__, "message": str(exc)}
-            if store is not None:
-                remaining = store.mark_folder_failed(job_id, folder, error_info)
-                if remaining == 0:
-                    self._finalize_folder_job(job_id)
+            self._record_folder_job_failure(store, job_id, folder, exc)
             # Do not re-raise — config errors are non-retriable; retrying won't help.
         except Exception as exc:
             _logger.exception(
@@ -946,18 +998,58 @@ class MailboxHttpHandlers:
                 job_id,
                 folder,
             )
-            if store is not None:
-                try:
-                    error_info = {"type": type(exc).__name__, "message": str(exc)}
-                    remaining = store.mark_folder_failed(job_id, folder, error_info)
-                    if remaining == 0:
-                        self._finalize_folder_job(job_id)
-                except Exception:
-                    _logger.exception(
-                        "Failed to record unexpected folder error in store: job_id=%r", job_id
-                    )
+            try:
+                self._record_folder_job_failure(store, job_id, folder, exc)
+            except VectorStoreError:
+                _logger.exception(
+                    "Failed to record unexpected folder error in store: job_id=%r", job_id
+                )
             raise
 
+        if remaining == 0:
+            self._finalize_folder_job(job_id)
+
+    def _record_folder_job_failure(
+        self,
+        store: ScanJobStore | None,
+        job_id: str,
+        folder: str,
+        exc: BaseException,
+    ) -> None:
+        """Persist folder failure details and finalize job when terminal."""
+        if store is None:
+            return
+
+        error_info: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
+        remaining = store.mark_folder_failed(job_id, folder, error_info)
+        if remaining == 0:
+            self._finalize_folder_job(job_id)
+
+    def process_poison_folder_job(self, msg_body: dict[str, Any]) -> None:
+        """Record terminal failure for a folder job moved to the poison queue."""
+        job_id = msg_body.get("job_id")
+        folder = msg_body.get("folder")
+        if not job_id or not folder:
+            _logger.error(
+                "Poison folder job missing required fields: payload=%r",
+                msg_body,
+            )
+            return
+
+        _logger.error(
+            "Processing poison folder job: job_id=%r folder=%r",
+            job_id,
+            folder,
+        )
+        error_info: dict[str, Any] = {
+            "type": "QueuePoisonError",
+            "message": (
+                "Folder job exceeded max dequeue count and moved to poison queue."
+            ),
+        }
+
+        store = self._get_scan_job_store()
+        remaining = store.mark_folder_failed(job_id, folder, error_info)
         if remaining == 0:
             self._finalize_folder_job(job_id)
 

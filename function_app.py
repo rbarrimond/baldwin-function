@@ -19,6 +19,7 @@ Triggers:
 """
 
 import json
+import os
 
 import azure.functions as func
 from azure.functions import HttpRequest, HttpResponse
@@ -26,6 +27,12 @@ from baldwin.http_handlers import build_http_handlers
 from baldwin.log import get_logger
 
 _logger = get_logger(__name__)
+
+SCAN_MAIL_QUEUE_NAME = os.environ.get("SCAN_MAIL_QUEUE_NAME", "scan-mail-jobs")
+SCAN_MAIL_POISON_QUEUE_NAME = os.environ.get(
+    "SCAN_MAIL_POISON_QUEUE_NAME",
+    f"{SCAN_MAIL_QUEUE_NAME}-poison",
+)
 
 app = func.FunctionApp()
 HANDLERS = build_http_handlers()
@@ -45,7 +52,7 @@ def get_scan_status(req: HttpRequest) -> HttpResponse:
 @app.function_name(name="process_scan_folder")
 @app.queue_trigger(
     arg_name="msg",
-    queue_name="scan-mail-jobs",
+    queue_name=SCAN_MAIL_QUEUE_NAME,
     connection="AzureWebJobsStorage",
 )
 def process_scan_folder(msg: func.QueueMessage) -> None:
@@ -56,6 +63,18 @@ def process_scan_folder(msg: func.QueueMessage) -> None:
         msg.dequeue_count,
     )
     HANDLERS.process_folder_job(json.loads(msg.get_body().decode("utf-8")))
+
+
+@app.function_name(name="process_scan_folder_poison")
+@app.queue_trigger(
+    arg_name="msg",
+    queue_name=SCAN_MAIL_POISON_QUEUE_NAME,
+    connection="AzureWebJobsStorage",
+)
+def process_scan_folder_poison(msg: func.QueueMessage) -> None:
+    """Record poison queue terminal failures for per-folder scan jobs."""
+    _logger.error("Poison queue trigger fired: id=%s", msg.id)
+    HANDLERS.process_poison_folder_job(json.loads(msg.get_body().decode("utf-8")))
 
 @app.function_name(name="cleanup_scan_jobs")
 @app.timer_trigger(
