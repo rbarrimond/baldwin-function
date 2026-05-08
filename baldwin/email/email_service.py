@@ -33,6 +33,13 @@ _SYSTEM_IMAP_FLAGS = {
     "\\Recent",
     "\\Seen",
 }
+_SKIPPABLE_FETCH_FAILURE_TOKENS = (
+    "no such message",
+    "not found",
+    "already expunged",
+    "has been expunged",
+    "invalid messageset",
+)
 
 
 @dataclass(frozen=True)
@@ -347,6 +354,15 @@ class EmailService:
         else:
             status, message_data = mail.fetch(identifier, "(FLAGS BODY.PEEK[])")
         if status != "OK":
+            reason = self._extract_imap_failure_reason(message_data)
+            if self._is_skippable_fetch_failure(reason):
+                _logger.warning(
+                    "Skipping IMAP message fetch after non-fatal server response: id=%s folder=%r reason=%r",
+                    identifier,
+                    folder,
+                    reason,
+                )
+                return []
             raise EmailFetchError(
                 f"Unable to fetch email payload for id={identifier} in folder '{folder}'."
             )
@@ -374,6 +390,26 @@ class EmailService:
             )
 
         return parsed_messages
+
+    @staticmethod
+    def _extract_imap_failure_reason(message_data: object) -> str:
+        if not isinstance(message_data, list):
+            return ""
+
+        parts: list[str] = []
+        for item in message_data:
+            if isinstance(item, bytes):
+                parts.append(item.decode("utf-8", errors="ignore"))
+            elif isinstance(item, str):
+                parts.append(item)
+        return " ".join(parts).strip()
+
+    @staticmethod
+    def _is_skippable_fetch_failure(reason: str) -> bool:
+        normalized = reason.strip().lower()
+        if not normalized:
+            return False
+        return any(token in normalized for token in _SKIPPABLE_FETCH_FAILURE_TOKENS)
 
     def _select_folder_status(self, mail: imaplib.IMAP4, folder: str) -> MailboxFolderStatus:
         status, data = mail.select(self._format_mailbox_argument(folder))

@@ -166,6 +166,61 @@ class EmailServiceConnectionTests(unittest.TestCase):
         self.assertEqual(result[0].imap_keywords, ["custom-tag"])
 
     @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
+    def test_fetch_emails_skips_expunged_messages(self, imap4_ssl: Mock) -> None:
+        """Per-message fetch misses should be skipped instead of failing the whole folder sync."""
+        message = EmailMessage()
+        message["Message-ID"] = "<message-1@example.com>"
+        message["Subject"] = "Inbox subject"
+        message["From"] = "sender@example.com"
+        message["Date"] = "Fri, 11 Apr 2026 09:15:00 +0000"
+        message.set_content("Inbox body")
+
+        mail = Mock()
+        mail.select.return_value = ("OK", [b"2"])
+        mail.search.return_value = ("OK", [b"1 2"])
+        mail.uid.return_value = ("OK", [b"101 102"])
+        mail.response.side_effect = [
+            (b"UIDVALIDITY", [b"999"]),
+            (b"UIDNEXT", [b"103"]),
+        ]
+        mail.fetch.side_effect = [
+            ("OK", [(b"1", message.as_bytes())]),
+            ("NO", [b"No such message"]),
+        ]
+        imap4_ssl.return_value = mail
+        service = EmailService("user@example.com", "password")
+
+        result = service.fetch_emails(1, MailboxFolders.from_values(["INBOX"]))
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].subject, "Inbox subject")
+        mail.logout.assert_called_once_with()
+
+    @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
+    def test_fetch_emails_raises_for_non_skippable_fetch_failures(self, imap4_ssl: Mock) -> None:
+        """Unknown fetch failures should still surface as EmailFetchError."""
+        mail = Mock()
+        mail.select.return_value = ("OK", [b"1"])
+        mail.search.return_value = ("OK", [b"1"])
+        mail.uid.return_value = ("OK", [b"101"])
+        mail.response.side_effect = [
+            (b"UIDVALIDITY", [b"999"]),
+            (b"UIDNEXT", [b"102"]),
+        ]
+        mail.fetch.return_value = ("NO", [b"temporary backend failure"])
+        imap4_ssl.return_value = mail
+        service = EmailService("user@example.com", "password")
+
+        with self.assertRaises(EmailFetchError) as captured:
+            service.fetch_emails(1, MailboxFolders.from_values(["INBOX"]))
+
+        self.assertEqual(
+            str(captured.exception),
+            "Unable to fetch email payload for id=1 in folder 'INBOX'.",
+        )
+        mail.logout.assert_called_once_with()
+
+    @patch("baldwin.email.email_service.imaplib.IMAP4_SSL")
     def test_get_folder_status_returns_uid_state(self, imap4_ssl: Mock) -> None:
         """Folder inspection should expose UIDVALIDITY, UIDNEXT, and current UID membership."""
         mail = Mock()

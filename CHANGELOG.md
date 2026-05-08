@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added resilience to per-message IMAP fetch failures: transient server responses (`"No such message"`, expunged messages, invalid messagesets) are now logged at WARNING and skipped instead of failing the entire folder job. Folder-level operations (SELECT, SEARCH, UID enumeration) and other IMAP errors remain hard failures.
+
 ## 0.8.0 - 2026-06-01
 
 - Added async, queue-backed scan-mail ingestion: `POST /api/scan-mail` now enqueues one Azure Storage Queue message per IMAP folder and returns `202 Accepted` with a job ID, decoupling response latency from mailbox size.

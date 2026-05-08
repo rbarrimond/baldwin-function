@@ -8,6 +8,14 @@ The email adapter now also supports mailbox cursor state and reconciliation thro
 
 The `scan-mail` HTTP path now uses bounded multithreading for per-folder fetch, normalization, and embedding stages, while keeping persistence, sync-state writes, and folder-membership reconciliation serialized to preserve the documented mailbox invariants.
 
+### Resilience
+
+Per-message IMAP fetch operations are resilient to transient server responses:
+- A message fetch that receives `NO` status with reason text matching `"no such message"`, `"expunged"`, or similar is logged at WARNING and skipped.
+- The folder job continues ingesting remaining messages in the batch.
+- Folder-level operations (SELECT, SEARCH, UID enumeration) and other IMAP protocol errors remain hard failures that propagate as `EmailFetchError`.
+- This allows mailbox ingestion to continue in the face of concurrent mailbox churn (deletions/expunges between SEARCH and FETCH).
+
 ## Scope
 
 - The first implementation is a manual script.
