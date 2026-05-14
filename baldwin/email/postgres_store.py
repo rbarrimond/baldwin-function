@@ -101,6 +101,8 @@ class PostgresEmailVectorStore(PostgresVectorStore):
             "folder_keywords": normalized_email.folder_keywords,
             "headers": normalized_email.headers,
         }
+        if normalized_email.semantic_annotations:
+            metadata["semantic_annotations"] = normalized_email.semantic_annotations
         return VectorDocument(
             document_key=normalized_email.fingerprint,
             source_type="email",

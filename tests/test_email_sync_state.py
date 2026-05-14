@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import unittest
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock, patch
+from dataclasses import replace
 
 from baldwin.email import Email, MailboxFolderStatus, MailboxFolders, PostgresEmailVectorStore
 from baldwin.embedding import EmbeddingResult
@@ -308,6 +309,96 @@ class EmailIngestionServiceSyncTests(unittest.TestCase):
         self.assertEqual(mock_store.upsert_mailbox_sync_state.call_count, 2)
         self.assertEqual(first_result["reconciled_missing"], 1)
         self.assertEqual(second_result["deleted_stale_documents"], 1)
+
+    @patch("baldwin.http_handlers.EmailService.get_folder_status")
+    @patch("baldwin.http_handlers.EmailService.fetch_emails")
+    def test_ingest_mailbox_applies_semantic_enrichment_before_persist(
+        self,
+        fetch_emails: Mock,
+        get_folder_status: Mock,
+    ) -> None:
+        """Semantic enrichment should update deduped documents before persistence."""
+        fetch_emails.return_value = [
+            Email(
+                id="<message-1@example.com>",
+                subject="Subject",
+                sender="sender@example.com",
+                to=["recipient@example.com"],
+                cc=None,
+                bcc=None,
+                reply_to=None,
+                date="Fri, 11 Apr 2026 09:15:00 +0000",
+                body="Body",
+                headers={"Message-ID": "<message-1@example.com>"},
+                folder="INBOX",
+                imap_uid=102,
+            )
+        ]
+        get_folder_status.return_value = Mock(
+            message_count=1,
+            uidvalidity=999,
+            uidnext=103,
+            uids=(102,),
+        )
+        mock_provider = MagicMock()
+        mock_provider.embed_texts.return_value = [
+            EmbeddingResult(
+                vector=[0.1, 0.2, 0.3],
+                provider="hashing",
+                model_name="hashing-v1",
+                dimensions=3,
+                metadata={},
+            )
+        ]
+        mock_store = MagicMock()
+        mock_store.get_mailbox_sync_state.return_value = None
+        mock_store.get_current_folder_uids.return_value = {}
+        mock_store.upsert_emails_batch.return_value = [
+            (MagicMock(inserted=True, embedding_updated=True), 123)
+        ]
+        mock_store.delete_documents_without_folders.return_value = 0
+
+        class _Enricher:
+            def enrich(self, normalized_emails: list[Any]) -> list[Any]:
+                """A mock enricher that simulates applying an allowlisted keyword with high confidence."""
+                enriched: list[Any] = []
+                for normalized_email in normalized_emails:
+                    folder_keywords = {
+                        folder: values.copy()
+                        for folder, values in normalized_email.folder_keywords.items()
+                    }
+                    folder_keywords.setdefault("INBOX", []).append("$Action")
+                    enriched.append(
+                        replace(
+                            normalized_email,
+                            folder_keywords=folder_keywords,
+                            semantic_annotations={"review_required": False},
+                        )
+                    )
+                return enriched
+
+        service = EmailIngestionService(
+            EnvironmentSettings(
+                {
+                    "DATABASE_URL": "postgresql://localhost/test",
+                    "IMAP_USER": "user@example.com",
+                    "IMAP_PASSWORD": "password",
+                }
+            )
+        )
+        from baldwin.email.semantic import SemanticEnricher
+        service.semantic_enricher = cast(SemanticEnricher, _Enricher())
+
+        with patch.object(service, "_build_vector_store", return_value=mock_store), patch.object(
+            service,
+            "_build_embedding_provider",
+            return_value=mock_provider,
+        ):
+            service.ingest_mailbox(1, MailboxFolders.from_values(["INBOX"]))
+
+        persisted_emails = mock_store.upsert_emails_batch.call_args.args[0]
+        self.assertEqual(persisted_emails[0].folder_keywords["INBOX"], ["$Action"])
+        self.assertEqual(persisted_emails[0].semantic_annotations, {"review_required": False})
 
 
 if __name__ == "__main__":

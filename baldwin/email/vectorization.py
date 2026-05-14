@@ -6,6 +6,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field, replace
 from email.utils import parsedate_to_datetime
+from typing import Any
 
 from baldwin.embedding import HashingEmbeddingProvider
 from baldwin.exceptions import EmailNormalizationError
@@ -57,6 +58,7 @@ class NormalizedEmail:
     headers: dict[str, str]
     folder_flags: dict[str, list[str]] = field(default_factory=dict)
     folder_keywords: dict[str, list[str]] = field(default_factory=dict)
+    semantic_annotations: dict[str, Any] = field(default_factory=dict)
 
 
 class EmailNormalizer:

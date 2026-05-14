@@ -26,6 +26,7 @@ from baldwin.email import (
     MailboxFolders,
 )
 from baldwin.email.postgres_store import PostgresEmailVectorStore
+from baldwin.email.semantic import SemanticEnricher, build_semantic_enricher
 from baldwin.email.vectorization import EmailNormalizer
 from baldwin.embedding import (
     EmbeddingProviderError,
@@ -184,6 +185,7 @@ class EmailIngestionService:
     def __init__(self, settings: EnvironmentSettings):
         self.settings = settings
         self.normalizer = EmailNormalizer()
+        self.semantic_enricher: SemanticEnricher = build_semantic_enricher(self.settings.environ)
         self._schema_ready = False
         self._schema_lock = Lock()
 
@@ -414,6 +416,10 @@ class EmailIngestionService:
             progress_callback=progress_callback,
         )
 
+    def _enrich_semantics(self, normalized_emails: Sequence[Any]) -> list[Any]:
+        """Run semantic enrichment in an additive, non-fatal post-dedup stage."""
+        return self.semantic_enricher.enrich(list(normalized_emails))
+
     @staticmethod
     def _reconcile_folder_membership(
         *,
@@ -481,6 +487,8 @@ class EmailIngestionService:
         _logger.info("Normalize complete: sync_run_id=%r normalized=%d", sync_run_id, len(normalized))
         deduped = self.normalizer.merge_duplicates(normalized)
         _logger.info("Dedup complete: sync_run_id=%r deduped=%d", sync_run_id, len(deduped))
+        deduped = self._enrich_semantics(deduped)
+        _logger.info("Semantic enrichment complete: sync_run_id=%r deduped=%d", sync_run_id, len(deduped))
         embeddings = self._embed_searchable_texts(
             [email_message.searchable_text for email_message in deduped],
             progress_callback=progress_callback,
@@ -598,6 +606,7 @@ class EmailIngestionService:
 
         normalized = self._normalize_emails(emails)
         deduped = self.normalizer.merge_duplicates(normalized)
+        deduped = self._enrich_semantics(deduped)
         embeddings = self._embed_searchable_texts(
             [email_message.searchable_text for email_message in deduped],
         )

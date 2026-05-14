@@ -50,6 +50,9 @@ The script accepts the following settings:
 - `AZURE_OPENAI_API_KEY` (required when `azure-openai`): Azure OpenAI API key.
 - `AZURE_OPENAI_API_VERSION` (optional when `azure-openai`): REST API version, default `2024-02-01`.
 - `BALDWIN_LOG_LEVEL` (optional): effective log level for all `baldwin.*` loggers. Accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`. Defaults to `WARNING`.
+- `SEMANTIC_ENRICHMENT_ENABLED` (optional): enable post-dedup semantic enrichment stage, default `false`.
+- `SEMANTIC_ALLOWED_KEYWORDS` (optional): comma-separated allowlist of IMAP keywords that semantic enrichment may auto-apply (for example, `$Action,$Waiting`). Default: empty (no auto-apply allowlist entries).
+- `SEMANTIC_AUTO_APPLY_MIN_CONFIDENCE` (optional): classifier confidence threshold used for IMAP keyword auto-apply when review is not required, default `0.9`.
 
 ## Schema
 
@@ -114,6 +117,8 @@ The email adapter persists IMAP mailbox metadata separately from message content
 - Starred mail is represented by the IMAP system flag `\Flagged` inside the relevant `folder_flags` entry.
 
 These fields are additive metadata only. They do not participate in fingerprint computation, duplicate collapse, or embedding refresh detection.
+
+When semantic enrichment is enabled, the adapter can also persist `metadata.semantic_annotations` containing classifier output and policy decisions (`approved_keywords`, `rejected_keywords`, `auto_applied_keywords`, `review_required`, and optional summary/provider/model details). This semantic metadata is additive and does not alter fingerprint or checksum behavior.
 
 ## Deduplication
 

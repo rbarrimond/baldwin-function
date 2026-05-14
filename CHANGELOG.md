@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added a new `baldwin.email.semantic` module with a semantic classifier contract, keyword allowlist policy, confidence-gated auto-apply logic, and a default no-op classifier for safe rollout.
+- Added a post-dedup semantic enrichment stage in `EmailIngestionService` so semantic annotations are attached before persistence while keeping embedding identity inputs unchanged.
+- Added optional semantic configuration settings: `SEMANTIC_ENRICHMENT_ENABLED`, `SEMANTIC_ALLOWED_KEYWORDS`, and `SEMANTIC_AUTO_APPLY_MIN_CONFIDENCE`.
+- Added optional `metadata.semantic_annotations` persistence for enriched emails and regression coverage for semantic policy behavior and ingestion hook wiring.
 - Added resilience to per-message IMAP fetch failures: permanent message-specific misses (`"no such message"`, `"expunged"`, `"invalid messageset"`) are logged at WARNING and skipped, and transient service failures (such as iCloud `[UNAVAILABLE]`) are retried locally with exponential backoff before that single message is skipped.
 - Added ERROR-level logging of per-message IMAP fetch failures to aid diagnostics.
 
