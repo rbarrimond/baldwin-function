@@ -17,7 +17,7 @@ This document captures the intentional semantics of the system.
 
 ---
 
-# Core Design Principles
+## Core Design Principles
 
 ## 1. Email is Input, Not Storage
 
@@ -58,12 +58,12 @@ This aligns with the Baldwin Prime Invariant:
 
 ---
 
-# IMAP Semantic Layers
+## IMAP Semantic Layers
 
 The system uses multiple overlapping semantic layers.
 
 | Layer | Purpose | Example |
-|---|---|---|
+| --- | --- | --- |
 | Folder | Structural routing | `Bulk`, `Alum`, `Family` |
 | Flag | Workflow urgency/state | Red Flag = Tier 0 |
 | Keyword | Semantic classification | `$AOR_Family` |
@@ -74,14 +74,14 @@ These layers are intentionally orthogonal.
 
 ---
 
-# Folder Strategy
+## Folder Strategy
 
 Folders represent broad structural routing rather than precise workflow state.
 
 Examples:
 
 | Folder | Purpose |
-|---|---|
+| --- | --- |
 | Inbox | Active intake |
 | Bulk | Low-value/high-volume email |
 | Alum | MIT/UPenn alumni traffic |
@@ -96,7 +96,7 @@ Folders should remain human-legible and relatively stable.
 
 ---
 
-# Flags as Workflow State
+## Flags as Workflow State
 
 Flags represent operational urgency and triage priority.
 
@@ -110,7 +110,7 @@ The system intentionally uses Apple Mail colored flags because they are:
 ## Proposed Flag Semantics
 
 | Flag Color | Meaning |
-|---|---|
+| --- | --- |
 | Red | Tier 0 immediate attention |
 | Orange | Important but not urgent |
 | Yellow | Pending review |
@@ -123,7 +123,7 @@ Flags represent workflow state rather than topic.
 
 ---
 
-# IMAP Keywords as Semantic Metadata
+## IMAP Keywords as Semantic Metadata
 
 Keywords provide machine-readable semantic classification.
 
@@ -190,7 +190,7 @@ These provide explainability and trust calibration.
 
 ---
 
-# Things Integration Model
+## Things Integration Model
 
 Things is treated as the canonical task management layer.
 
@@ -199,7 +199,7 @@ Email classification maps naturally into Things concepts.
 ## Mapping
 
 | Email Semantic | Things Concept |
-|---|---|
+| --- | --- |
 | AoR keyword | Area of Responsibility |
 | Action keyword | To-Do |
 | Thread cluster | Project |
@@ -208,7 +208,7 @@ Email classification maps naturally into Things concepts.
 
 ---
 
-# Example Workflow
+## Example Workflow
 
 ## Incoming Email
 
@@ -249,7 +249,7 @@ Task:
 
 ---
 
-# SaneBox Interaction Model
+## SaneBox Interaction Model
 
 SaneBox remains responsible for coarse contact-centric filtering.
 
@@ -270,7 +270,7 @@ while minimizing folder disruption.
 
 ---
 
-# Embeddings and Semantic Retrieval
+## Embeddings and Semantic Retrieval
 
 Threads become the primary semantic unit.
 
@@ -296,14 +296,14 @@ Single-message threads are valid degenerate cases.
 
 ---
 
-# Escalation Logic
+## Escalation Logic
 
 Workflow state can evolve over time.
 
 Example:
 
 | Condition | Action |
-|---|---|
+| --- | --- |
 | No response after 3 days | escalate flag |
 | Payment overdue | promote to Red |
 | Repeated ignored thread | summarize daily |
@@ -313,7 +313,7 @@ This creates an executive attention surface rather than a passive archive.
 
 ---
 
-# Human Authority
+## Human Authority
 
 AI assists.
 
@@ -338,7 +338,7 @@ The system intentionally avoids autonomous destructive behavior.
 
 ---
 
-# Future Enhancements
+## Future Enhancements
 
 ## Planned Capabilities
 
@@ -354,7 +354,7 @@ The system intentionally avoids autonomous destructive behavior.
 
 ---
 
-# Architectural Philosophy
+## Architectural Philosophy
 
 Baldwin is not merely an email classifier.
 
