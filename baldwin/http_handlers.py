@@ -822,6 +822,45 @@ class MailboxHttpHandlers:
             return parts[1]
         return str(uuid4())
 
+    def _resolve_mcp_mailbox_folders(self, folders: Sequence[str] | None) -> MailboxFolders:
+        """Resolve MCP folder arguments into the same typed mailbox folder model used by HTTP."""
+        default_folders = self.settings.get("IMAP_FOLDERS", DEFAULT_IMAP_FOLDER)
+        return MailboxFolders.from_values(
+            list(folders) if folders else None,
+            default_values=[default_folders] if default_folders else None,
+        )
+
+    def scan_mail_payload(
+        self,
+        days: int,
+        folders: Sequence[str] | None,
+        *,
+        include_deprecation_notice: bool = False,
+    ) -> dict[str, Any]:
+        """Run mailbox ingestion and return the JSON payload used by HTTP and MCP callers."""
+        summary = self.ingestion_service.ingest_mailbox(
+            days,
+            self._resolve_mcp_mailbox_folders(folders),
+        )
+        if include_deprecation_notice:
+            summary["_deprecation_notice"] = (
+                "GET /api/scan-mail is deprecated. Use POST /api/scan-mail for async execution."
+            )
+        return summary
+
+    def summarize_email_payload(self, body: str) -> dict[str, str]:
+        """Summarize a single email body and return the JSON payload used by HTTP and MCP callers."""
+        return {"summary": self.summary_service.summarize(body)}
+
+    def build_digest_content(self, summaries: list[Any], audience: str) -> str:
+        """Build a Markdown digest from summaries for HTTP and MCP callers."""
+        return self.digest_builder.build(summaries, audience)
+
+    def send_digest_payload(self, to_address: str, subject: str, content: str) -> dict[str, str]:
+        """Send a digest email and return the JSON payload used by HTTP and MCP callers."""
+        from_address = self.digest_delivery_service.send(to_address, subject, content)
+        return {"status": "sent", "from": from_address}
+
     def enqueue_scan(self, req: HttpRequest) -> HttpResponse:
         """Enqueue an async scan job per folder and return 202 with a job ID."""
         set_trace_id(self._resolve_trace_id(req))
@@ -1118,12 +1157,10 @@ class MailboxHttpHandlers:
         set_trace_id(self._resolve_trace_id(req))
         try:
             scan_request = self.request_parser.parse_scan_request(req)
-            summary = self.ingestion_service.ingest_mailbox(
+            summary = self.scan_mail_payload(
                 scan_request.days,
-                scan_request.folders,
-            )
-            summary["_deprecation_notice"] = (
-                "GET /api/scan-mail is deprecated. Use POST /api/scan-mail for async execution."
+                scan_request.folders.folders,
+                include_deprecation_notice=True,
             )
             return self.response_factory.json(summary)
         except BaldwinConfigurationError:
@@ -1158,8 +1195,9 @@ class MailboxHttpHandlers:
         """Handle a request to summarize an email body."""
         try:
             data = req.get_json()
-            summary = self.summary_service.summarize(str(data.get("body", "")))
-            return self.response_factory.json({"summary": summary})
+            return self.response_factory.json(
+                self.summarize_email_payload(str(data.get("body", "")))
+            )
         except BaldwinValidationError as exc:
             _logger.warning("Invalid request for summarize_email: %s", exc)
             return self.response_factory.json({"error": str(exc)}, status_code=400)
@@ -1171,7 +1209,7 @@ class MailboxHttpHandlers:
         """Handle a request to build a Markdown digest from summaries."""
         try:
             data = req.get_json()
-            digest = self.digest_builder.build(
+            digest = self.build_digest_content(
                 data.get("summaries", []),
                 data.get("audience", "robert"),
             )
@@ -1195,8 +1233,9 @@ class MailboxHttpHandlers:
                     "Recipient, subject, and content are required to send a digest."
                 )
 
-            from_address = self.digest_delivery_service.send(to_address, subject, content)
-            return self.response_factory.json({"status": "sent", "from": from_address})
+            return self.response_factory.json(
+                self.send_digest_payload(to_address, subject, content)
+            )
         except BaldwinConfigurationError:
             _logger.exception("Configuration error in send_digest")
             return self.response_factory.json(

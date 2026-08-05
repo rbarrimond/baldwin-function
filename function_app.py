@@ -37,6 +37,14 @@ SCAN_MAIL_POISON_QUEUE_NAME = os.environ.get(
 app = func.FunctionApp()
 HANDLERS = build_http_handlers()
 
+
+def _load_mcp_tools() -> None:
+    """Import MCP tool registrations after the shared FunctionApp is initialized."""
+    import baldwin.mcp_email_tools  # noqa: F401
+
+
+_load_mcp_tools()
+
 @app.function_name(name="enqueue_scan")
 @app.route(route="scan-mail", methods=["POST"])
 def enqueue_scan(req: HttpRequest) -> HttpResponse:

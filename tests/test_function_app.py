@@ -50,6 +50,15 @@ class FunctionAppEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.get_body()), {"summary": "Agenda for tomorrow."})
 
+    def test_shared_summarize_email_payload_matches_http_behavior(self) -> None:
+        """The shared summary payload should match the HTTP response body shape."""
+        self.assertEqual(
+            function_app.HANDLERS.summarize_email_payload(
+                "Agenda for tomorrow. Please review the contract."
+            ),
+            {"summary": "Agenda for tomorrow."},
+        )
+
     def test_build_digest_returns_markdown_response(self) -> None:
         """The build_digest endpoint should return a Markdown-formatted digest in the response body."""
         response = function_app.build_digest(
@@ -64,6 +73,13 @@ class FunctionAppEndpointTests(unittest.TestCase):
         self.assertIn("## Daily Digest for Robert", response.get_body().decode("utf-8"))
         self.assertIn("- One", response.get_body().decode("utf-8"))
         self.assertEqual(response.mimetype, "text/markdown")
+
+    def test_shared_build_digest_content_matches_http_behavior(self) -> None:
+        """The shared digest builder should return the same Markdown content as HTTP."""
+        self.assertEqual(
+            function_app.HANDLERS.build_digest_content(["One", {"summary": "Two"}], "robert"),
+            "## Daily Digest for Robert\n\n- One\n- Two",
+        )
 
     def test_scan_mail_returns_502_for_imap_failures(self) -> None:
         """The scan_mail endpoint should return a 502 status code with a generic error message
@@ -106,6 +122,19 @@ class FunctionAppEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(ingest_mailbox.call_args.args[0], 1)
         self.assertEqual(ingest_mailbox.call_args.args[1].folders, ("INBOX", "Archive"))
+
+    def test_shared_scan_mail_payload_preserves_requested_folders(self) -> None:
+        """The shared scan payload should pass requested folders through the ingestion service."""
+        with patch.object(
+            function_app.HANDLERS.ingestion_service,
+            "ingest_mailbox",
+            return_value={"total_fetched": 0, "total_normalized": 0, "total_deduped": 0, "persisted": []},
+        ) as ingest_mailbox:
+            result = function_app.HANDLERS.scan_mail_payload(1, ["INBOX", "Archive"])
+
+        self.assertEqual(ingest_mailbox.call_args.args[0], 1)
+        self.assertEqual(ingest_mailbox.call_args.args[1].folders, ("INBOX", "Archive"))
+        self.assertEqual(result, {"total_fetched": 0, "total_normalized": 0, "total_deduped": 0, "persisted": []})
 
     def test_function_app_import_does_not_require_database_url(self) -> None:
         """Importing function_app should not require DATABASE_URL before scan-mail is invoked."""
@@ -165,6 +194,20 @@ class FunctionAppEndpointTests(unittest.TestCase):
             json.loads(response.get_body()),
             {"error": "Recipient, subject, and content are required to send a digest."},
         )
+
+    def test_shared_send_digest_payload_returns_sender_and_status(self) -> None:
+        """The shared send payload should return the same success shape for MCP callers."""
+        with patch.object(function_app.HANDLERS.digest_delivery_service, "send", return_value="noreply@example.com") as send_digest:
+            self.assertEqual(
+                function_app.HANDLERS.send_digest_payload(
+                    "user@example.com",
+                    "Digest",
+                    "Body",
+                ),
+                {"status": "sent", "from": "noreply@example.com"},
+            )
+
+        send_digest.assert_called_once_with("user@example.com", "Digest", "Body")
 
     def test_process_scan_folder_poison_forwards_payload_to_handlers(self) -> None:
         """Poison queue trigger should forward decoded payload to the poison handler."""
